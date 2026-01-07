@@ -1,6 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import Provider from "./provider.jsx"; // This now works because of 'export default'
+import Provider from "./provider.js"; // This now works because of 'export default'
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
