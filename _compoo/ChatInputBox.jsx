@@ -1,11 +1,14 @@
 import { Paperclip, Mic, Send } from "lucide-react";
 import React from "react";
 import { Button } from "@/components/ui/button";
+import AiMultimodel from"./AiMultimodel.jsx";
 
 export function ChatInputBox() {
   return (
     <div className="relative min-h-[calc(100vh-64px)] w-full flex flex-col">
-      {/* Page Content Space */}
+      <div>
+        <AiMultimodel/>
+      </div>
       <div className="flex-1 w-full">
         {/* Chat history goes here */}
       </div>
