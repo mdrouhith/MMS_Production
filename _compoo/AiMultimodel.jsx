@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { MessageSquare, Lock } from "lucide-react"; 
 import { Button } from "@/components/ui/button";
 
+
 function AiMultimodel() {
   const [aiModeList, setAiModelList] = React.useState(AiModelList);
 
@@ -25,6 +26,9 @@ function AiMultimodel() {
     );
   };
 
+  // Firestore আপডেট করার লজিক
+
+  
   return (
     <div className="flex w-full h-[75vh] border-b overflow-x-auto">
       {aiModeList.map((model, index) => (
