@@ -46,7 +46,7 @@ export function AppSidebar() {
                     variant={"ghost"}
                     size={"icon"}
                     onClick={() => setTheme("light")}
-                  >
+                  > 
                     <Moon className={"text-yellow-400 h-5 w-5"} />
                   </Button>
                 )}
@@ -59,7 +59,8 @@ export function AppSidebar() {
               + New Chat
             </Button>
           ) : (
-            <SignInButton>SIGN IN</SignInButton>
+            <SignInButton ><Button className="mt-7 w-full" size="lg"
+                size="lg" >SIGN IN</Button></SignInButton>
           )}
         </div>
       </SidebarHeader>
