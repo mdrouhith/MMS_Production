@@ -5,7 +5,7 @@ export default [
     premium: false,
     enable: true,
     subModel: [
-      { name: "GPT 3.5", premium: true, id: "gpt-3.5" },
+      { name: "GPT 3.5", premium: false, id: "gpt-3.5" },
       { name: "GPT 3.5 Turbo", premium: false, id: "gpt-3.5-turbo" },
       { name: "GPT 4.1 Mini", premium: false, id: "gpt-4.1-mini" },
       { name: "GPT 4.1", premium: true, id: "gpt-4.1" },
@@ -17,7 +17,7 @@ export default [
   {
     model: "Gemini",
     icon: "/gemini.png",
-    premium: true,
+    premium: false,
     enable: true,
     subModel: [
       { name: "Gemini 2.5 Lite", premium: false, id: "gemini-2.5-flash-lite" },
@@ -38,11 +38,11 @@ export default [
   {
     model: "Mistral",
     icon: "/mistral.png",
-    premium: true,
+    premium: false,
     enable: true,
     subModel: [
       { name: "Mistral Medium 2505", premium: false, id: "mistral-medium-2505" },
-      { name: "Ministral 3B", premium: true, id: "Ministral-3B" },
+      { name: "Ministral 3B", premium: false, id: "Ministral-3B" },
     ],
   },
   {
@@ -68,11 +68,11 @@ export default [
   {
     model: "Llama",
     icon: "/llama.png",
-    premium: false,
+    premium: true,
     enable: true,
     subModel: [
       { name: "Llama 3.3 70B Instruct", premium: false, id: "Llama-3.3-70B-Instruct" },
-      { name: "Llama 4 Scout 17B 16E Instruct", premium: false, id: "Llama-4-Scout-17B-16E-Instruct" },
+      { name: "Llama 4 Scout 17B 16E Instruct", premium: true, id: "Llama-4-Scout-17B-16E-Instruct" },
     ],
   },
 ];
