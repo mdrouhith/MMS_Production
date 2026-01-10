@@ -32,7 +32,7 @@ export default [
     enable: true,
     subModel: [
       { name: "DeepSeek R1", premium: false, id: "DeepSeek-R1" },
-      { name: "DeepSeek R1 0528", premium: true, id: "DeepSeek-R1-0528" },
+      { name: "DeepSeek R1 0528", premium: false, id: "DeepSeek-R1-0528" },
     ],
   },
   {
@@ -41,8 +41,8 @@ export default [
     premium: true,
     enable: true,
     subModel: [
-      { name: "Mistral Medium 2505", premium: true, id: "mistral-medium-2505" },
-      { name: "Ministral 3B", premium: false, id: "Ministral-3B" },
+      { name: "Mistral Medium 2505", premium: false, id: "mistral-medium-2505" },
+      { name: "Ministral 3B", premium: true, id: "Ministral-3B" },
     ],
   },
   {
@@ -52,7 +52,7 @@ export default [
     enable: true,
     subModel: [
       { name: "Grok 3 Mini", premium: false, id: "grok-3-mini" },
-      { name: "Grok 3", premium: true, id: "grok-3" },
+      { name: "Grok 3", premium: false, id: "grok-3" },
     ],
   },
   {
@@ -71,8 +71,8 @@ export default [
     premium: false,
     enable: true,
     subModel: [
-      { name: "Llama 3.3 70B Instruct", premium: true, id: "Llama-3.3-70B-Instruct" },
-      { name: "Llama 4 Scout 17B 16E Instruct", premium: true, id: "Llama-4-Scout-17B-16E-Instruct" },
+      { name: "Llama 3.3 70B Instruct", premium: false, id: "Llama-3.3-70B-Instruct" },
+      { name: "Llama 4 Scout 17B 16E Instruct", premium: false, id: "Llama-4-Scout-17B-16E-Instruct" },
     ],
   },
 ];
