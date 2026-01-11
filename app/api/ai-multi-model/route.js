@@ -8,10 +8,8 @@ export async function POST(req) {
     const response = await axios.post(
       "https://kravixstudio.com/api/v1/chat",
       {
-        // FIX: msg কে Array-র ভেতর ঢোকানো হয়েছে [msg]
-        message: [msg], 
-        // ব্যবহারকারী যে মডেল পাঠাবে সেটাই যাবে (তবে সঠিক নাম হতে হবে)
-        aiModel: model, 
+        message: msg, 
+        aiModel: model,
         outputType: "text",
       },
       {
@@ -22,15 +20,26 @@ export async function POST(req) {
       }
     );
 
-    console.log(response.data);
+    // 🔴 FIX: আগে আমরা response.data দিয়ে দিচ্ছিলাম, তাই সব চলে আসছিল।
+    // এখন আমরা চেক করছি নির্দিষ্ট 'aiResponse' কি (Key) আছে কিনা।
+    const aiReplyText = 
+        response.data.aiResponse || // <--- এইটাই তোমার দরকার
+        response.data.result || 
+        response.data.message || 
+        response.data.content || 
+        // যদি একান্তই স্ট্রিং না হয়, তবেই পুরোটা স্ট্রিং করে পাঠাবে
+        (typeof response.data === 'string' ? response.data : JSON.stringify(response.data));
 
     return NextResponse.json({
-      result: response.data,
+      aiResponse: aiReplyText, 
       model: parentModel,
     });
+
   } catch (error) {
-    // Error handling যোগ করা হলো যাতে 500 ক্র্যাশ না করে আসল এরর দেখা যায়
     console.error("API Error:", error.response?.data || error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+        { error: "Failed to fetch response" }, 
+        { status: error.response?.status || 500 }
+    );
   }
 }
