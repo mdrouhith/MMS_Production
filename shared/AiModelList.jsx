@@ -38,7 +38,7 @@ export default [
   {
     model: "Mistral",
     icon: "/mistral.png",
-    premium: false,
+    premium: true,
     enable: true,
     subModel: [
       { name: "Mistral Medium 2505", premium: false, id: "mistral-medium-2505" },
@@ -51,14 +51,14 @@ export default [
     premium: true,
     enable: true,
     subModel: [
-      { name: "Grok 3 Mini", premium: true, id: "grok-3-mini" },
+      { name: "Grok 3 Mini", premium: false, id: "grok-3-mini" },
       { name: "Grok 3", premium: false, id: "grok-3" },
     ],
   },
   {
     model: "Cohere",
     icon: "/cohere.png",
-    premium: false,
+    premium: true,
     enable: true,
     subModel: [
       { name: "Cohere Command A", premium: false, id: "cohere-command-a" },
@@ -72,7 +72,7 @@ export default [
     enable: true,
     subModel: [
       { name: "Llama 3.3 70B Instruct", premium: false, id: "Llama-3.3-70B-Instruct" },
-      { name: "Llama 4 Scout 17B 16E Instruct", premium: true, id: "Llama-4-Scout-17B-16E-Instruct" },
+      { name: "Llama 4 Scout 17B 16E Instruct", premium: false, id: "Llama-4-Scout-17B-16E-Instruct" },
     ],
   },
 ];
