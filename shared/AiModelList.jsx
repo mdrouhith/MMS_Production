@@ -51,7 +51,7 @@ export default [
     premium: true,
     enable: true,
     subModel: [
-      { name: "Grok 3 Mini", premium: false, id: "grok-3-mini" },
+      { name: "Grok 3 Mini", premium: true, id: "grok-3-mini" },
       { name: "Grok 3", premium: false, id: "grok-3" },
     ],
   },
