@@ -5,7 +5,6 @@ import { doc, getDoc, setDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-
   if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
 
   const headerPayload = await headers();
@@ -31,63 +30,63 @@ export async function POST(req) {
   const data = evt.data;
   const eventType = evt.type;
 
-  // 1. User Info
+  // 1. সেই আগের 'payer' মেথড যেটা কাজ করেছিল
   const payer = data.payer || {};
   const userId = payer.user_id; 
   const userEmail = payer.email;
   const status = data.status;
-
-  // 2. Plan Info
-  const item = data.items && data.items.length > 0 ? data.items[0] : null;
-  const planSlug = item?.plan?.slug || ""; 
-  const planAmount = item?.plan?.amount || 0;
+  
+  // 2. বিলিং পিরিয়ড (ডবল ক্রেডিট আটকাতে)
   const currentPeriodStart = data.current_period_start;
+  const planAmount = data.items?.[0]?.plan?.amount || 0;
 
-  console.log(`🛡️ ACTION: User: ${userId} | Amount: ${planAmount}`);
+  console.log(`⚡ WEBHOOK: User: ${userId} | Status: ${status}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     if ((status === 'active' || status === 'succeeded') && userId) {
         
-        const userRef = doc(db, "users", userId);
-
-        // 🛑 CASE 1: যদি প্ল্যান FREE হয় (Downgrade/Cancel)
-        // আপনার রিকোয়ারমেন্ট: লক করা যাবে না, ক্রেডিটও হাত দেওয়া যাবে না।
-        // তাই আমরা ডাটাবেসে কোনো আপডেটই করব না। চুপচাপ রিটার্ন করব।
-        if (planSlug.toLowerCase().includes('free') || planAmount === 0) {
-            console.log(`📉 Free/Downgrade Event detected. IGNORING update to keep user unlocked.`);
-            // এখানে setDoc বা updateDoc কিচ্ছু নেই। তাই ডাটাবেসে প্ল্যান 'student'-ই থেকে যাবে।
-            return new Response('Downgrade Ignored (Access Retained)', { status: 200 });
+        // 🛑 Free Plan চেক: যদি ফ্রি বা ০ টাকার প্ল্যান হয়, আমরা কিছুই করব না
+        // (আপনার রিকোয়ারমেন্ট: ডাটাবেসে হাত দিব না, আনলকই থাকবে)
+        if (planAmount === 0) {
+            console.log("Skipping Free Plan update (Keeping user unlocked).");
+            return new Response('Skipped Free Plan', { status: 200 });
         }
 
-        // ✅ CASE 2: যদি PAID (Student) প্ল্যান হয়
+        const userRef = doc(db, "users", userId);
+
         try {
+            // ১. আগে ডাটাবেস চেক করি
             const userSnap = await getDoc(userRef);
-            
+            let shouldAddCredit = true;
+
             if (userSnap.exists()) {
                 const userData = userSnap.data();
-                
-                // ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে পেয়েছে কি না
+                // যদি দেখি এই মাসের বিলিং ডেট আগেই সেভ করা আছে -> ক্রেডিট দিব না
                 if (userData.lastBillingPeriod === currentPeriodStart) {
-                    console.log("🛑 Credit already given for this month. Skipping.");
-                    // প্ল্যান স্টুডেন্ট কনফার্ম করছি (যদি আগে ফ্রি থেকে থাকে), কিন্তু ক্রেডিট দিচ্ছি না
-                    await setDoc(userRef, { plan: "student" }, { merge: true });
-                    return new Response('Already Processed', { status: 200 });
+                    shouldAddCredit = false;
+                    console.log("⚠️ Same billing period detected. NOT adding credit.");
                 }
             }
 
-            console.log(`🚀 New Paid Subscription! Adding 2000 Credits.`);
-
-            // ক্রেডিট এড করা হচ্ছে (শুধুমাত্র নতুন পেমেন্ট/মাসের জন্য)
-            await setDoc(userRef, {
-                plan: "student",
-                credit: increment(2000), 
-                totalCredit: 2000,
-                lastBillingPeriod: currentPeriodStart, 
+            // ২. আপডেট লজিক
+            const updateData = {
+                plan: "student", // ✅ এটা সব সময় স্টুডেন্ট করে দিবে (আনলক ফিক্স)
                 paymentEmail: userEmail,
+                lastBillingPeriod: currentPeriodStart, // তারিখ আপডেট করে রাখলাম
                 updatedAt: new Date().toISOString()
-            }, { merge: true });
+            };
+
+            // যদি নতুন মাস হয়, তবেই ক্রেডিট বাড়াব
+            if (shouldAddCredit) {
+                updateData.credit = increment(2000);
+                updateData.totalCredit = 2000;
+                console.log("🚀 Adding 2000 Credits...");
+            }
+
+            // ৩. ডাটাবেসে সেভ
+            await setDoc(userRef, updateData, { merge: true });
             
-            console.log(`✅ SUCCESS: Credits Added.`);
+            console.log(`✅ SUCCESS: User unlocked. Credit Added: ${shouldAddCredit}`);
 
         } catch (error) {
             console.error("❌ DB Error:", error);
