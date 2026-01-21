@@ -11,8 +11,8 @@ export async function POST(req) {
     throw new Error('Please add WEBHOOK_SECRET from Clerk Dashboard to .env.local');
   }
 
-  // ২. হেডার ভেরিফিকেশন (সিকিউরিটির জন্য)
-  const headerPayload = headers();
+  // ২. হেডার ভেরিফিকেশন (Next.js 16 Fix: await যোগ করা হয়েছে)
+  const headerPayload = await headers(); // 🟢 এখানে await যোগ করা হয়েছে
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
   const svix_signature = headerPayload.get("svix-signature");
@@ -38,26 +38,28 @@ export async function POST(req) {
     return new Response('Error occured', { status: 400 });
   }
 
-  // ৪. ইভেন্ট চেক এবং ফায়ারবেস আপডেট
+  // ৪. ইভেন্ট হ্যান্ডলিং
   const eventType = evt.type;
   const { id, public_metadata } = evt.data;
 
-  // ইভেন্ট: যখন ইউজারের মেটাডাটা আপডেট হবে (যেমন পেমেন্টের পর)
+  // ইভেন্ট: ইউজার আপডেট হলে
   if (eventType === 'user.updated') {
-    
-    // চেক করা হচ্ছে প্ল্যান 'pro' হয়েছে কি না
+    // চেক: যদি প্ল্যান 'pro' হয়
     if (public_metadata?.plan === 'pro') {
         const userRef = doc(db, "users", id);
         
-        await updateDoc(userRef, {
-            plan: "pro", // প্ল্যান আপডেট
-            credit: increment(2000), // ২০০০ ক্রেডিট অ্যাড
-            lastResetDate: new Date().toISOString().split('T')[0]
-        });
-        
-        console.log(`Success: User ${id} is now PRO!`);
+        try {
+          await updateDoc(userRef, {
+              plan: "pro", 
+              credit: increment(2000), 
+              lastResetDate: new Date().toISOString().split('T')[0]
+          });
+          console.log(`Success: User ${id} upgraded to PRO!`);
+        } catch (error) {
+          console.error("Error updating Firestore:", error);
+        }
     }
   }
 
-  return new Response('', { status: 200 });
+  return new Response('Webhook received', { status: 200 });
 }
