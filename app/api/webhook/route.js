@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
   if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
 
   const headerPayload = await headers();
@@ -30,66 +31,78 @@ export async function POST(req) {
   const data = evt.data;
   const eventType = evt.type;
 
-  // 1. সেই আগের 'payer' মেথড যেটা কাজ করেছিল
+  // 1. User Identification
   const payer = data.payer || {};
   const userId = payer.user_id; 
   const userEmail = payer.email;
   const status = data.status;
-  
-  // 2. বিলিং পিরিয়ড (ডবল ক্রেডিট আটকাতে)
-  const currentPeriodStart = data.current_period_start;
-  const planAmount = data.items?.[0]?.plan?.amount || 0;
 
-  console.log(`⚡ WEBHOOK: User: ${userId} | Status: ${status}`);
+  // 🟢 FIX: Active Plan খোঁজা (Items array এর মধ্যে লুপ চালিয়ে)
+  // আগে আমরা items[0] নিচ্ছিলাম, যেটা ভুল ছিল।
+  let activeItem = null;
+  if (data.items && data.items.length > 0) {
+    // আমরা সেই আইটেম খুঁজব যার টাকা > ০ এবং স্ট্যাটাস একটিভ
+    activeItem = data.items.find(item => item.plan.amount > 0 && item.status === 'active');
+    
+    // যদি একটিভ না পাই, তাহলে অন্তত সেই আইটেম নিব যার টাকা > ০ (নতুন পেমেন্টের ক্ষেত্রে)
+    if (!activeItem) {
+        activeItem = data.items.find(item => item.plan.amount > 0);
+    }
+  }
+
+  // যদি তাও কিছু না পাই, ডিফল্ট ভ্যালু (Skip আটকানোর জন্য)
+  const planAmount = activeItem ? activeItem.plan.amount : 0;
+  const currentPeriodStart = data.current_period_start;
+
+  console.log(`🔍 Smart Check -> User: ${userId} | Found Active Amount: ${planAmount}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     if ((status === 'active' || status === 'succeeded') && userId) {
         
-        // 🛑 Free Plan চেক: যদি ফ্রি বা ০ টাকার প্ল্যান হয়, আমরা কিছুই করব না
-        // (আপনার রিকোয়ারমেন্ট: ডাটাবেসে হাত দিব না, আনলকই থাকবে)
+        // 🛑 যদি আসলেই কোনো Paid Plan খুঁজে না পাওয়া যায়, তখন Skip করব
         if (planAmount === 0) {
-            console.log("Skipping Free Plan update (Keeping user unlocked).");
-            return new Response('Skipped Free Plan', { status: 200 });
+            console.log("⚠️ No Active Paid Plan found in items. Skipping update.");
+            return new Response('Skipped (No Paid Plan)', { status: 200 });
         }
 
         const userRef = doc(db, "users", userId);
 
         try {
-            // ১. আগে ডাটাবেস চেক করি
+            // ১. আগে ডাটাবেস চেক করি (ক্রেডিট ডুপ্লিকেট আটকানোর জন্য)
             const userSnap = await getDoc(userRef);
             let shouldAddCredit = true;
 
             if (userSnap.exists()) {
                 const userData = userSnap.data();
-                // যদি দেখি এই মাসের বিলিং ডেট আগেই সেভ করা আছে -> ক্রেডিট দিব না
+                // যদি দেখি এই মাসের বিলিং ডেট আগেই সেভ করা আছে
                 if (userData.lastBillingPeriod === currentPeriodStart) {
                     shouldAddCredit = false;
-                    console.log("⚠️ Same billing period detected. NOT adding credit.");
+                    console.log("🛑 Same billing period matched. Keeping plan active but NO extra credit.");
                 }
             }
 
-            // ২. আপডেট লজিক
+            // ২. আপডেট ডাটা তৈরি
             const updateData = {
-                plan: "student", // ✅ এটা সব সময় স্টুডেন্ট করে দিবে (আনলক ফিক্স)
+                plan: "student", // ✅ পেমেন্ট থাকলে আনলক হবেই
                 paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart, // তারিখ আপডেট করে রাখলাম
+                lastBillingPeriod: currentPeriodStart, // ট্র্যাকিং এর জন্য ডেট আপডেট
                 updatedAt: new Date().toISOString()
             };
 
-            // যদি নতুন মাস হয়, তবেই ক্রেডিট বাড়াব
+            // ৩. ক্রেডিট শুধুমাত্র তখনই এড হবে যদি নতুন মাস হয়
             if (shouldAddCredit) {
                 updateData.credit = increment(2000);
                 updateData.totalCredit = 2000;
-                console.log("🚀 Adding 2000 Credits...");
+                console.log("🚀 Adding 2000 Credits (Fresh Billing Cycle)");
             }
 
-            // ৩. ডাটাবেসে সেভ
+            // ৪. ফাইনাল সেভ
             await setDoc(userRef, updateData, { merge: true });
             
-            console.log(`✅ SUCCESS: User unlocked. Credit Added: ${shouldAddCredit}`);
+            console.log(`✅ SUCCESS: DB Updated. Credits Added: ${shouldAddCredit}`);
 
         } catch (error) {
-            console.error("❌ DB Error:", error);
+            console.error("❌ DB Update Error:", error);
             return new Response('DB Error', { status: 500 });
         }
     }
