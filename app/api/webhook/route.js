@@ -5,7 +5,10 @@ import { doc, setDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-  if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
+
+  if (!WEBHOOK_SECRET) {
+    return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
+  }
 
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
@@ -13,7 +16,7 @@ export async function POST(req) {
   const svix_signature = headerPayload.get("svix-signature");
 
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Header missing', { status: 400 });
+    return new Response('Error: Missing svix headers', { status: 400 });
   }
 
   const payload = await req.json();
@@ -22,53 +25,48 @@ export async function POST(req) {
   let evt;
 
   try {
-    evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
+    evt = wh.verify(body, {
+      "svix-id": svix_id,
+      "svix-timestamp": svix_timestamp,
+      "svix-signature": svix_signature,
+    });
   } catch (err) {
-    return new Response('Verify error', { status: 400 });
+    return new Response('Error verifying webhook', { status: 400 });
   }
 
   const eventType = evt.type;
   const data = evt.data;
-  const status = data.status;
+  
+  // 🟢 DYNAMIC ID: Clerk যে ইউজারের জন্য ইভেন্ট পাঠাবে, সেই আইডি নেওয়া হচ্ছে
+  const userId = data.user_id; 
+  const status = data.status; 
 
-  console.log(`📥 Event: ${eventType}, Status: ${status}`);
+  console.log(`🔔 Event: ${eventType} | User: ${userId} | Status: ${status}`);
 
-  // 🟢 লজিক: পেমেন্ট সফল হলে
+  // ইভেন্ট চেক
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    if (status === 'active' || status === 'succeeded') {
+    
+    // স্ট্যাটাস এবং ইউজার আইডি চেক
+    if ((status === 'active' || status === 'succeeded') && userId) {
+        
+        const userRef = doc(db, "users", userId);
         
         try {
-            // ১. Clerk যে আইডি পাঠাচ্ছে সেটা আপডেট করার চেষ্টা
-            const incomingUserId = data.user_id;
-            if (incomingUserId) {
-                console.log(`🔄 Updating Incoming ID: ${incomingUserId}`);
-                await setDoc(doc(db, "users", incomingUserId), {
-                    plan: "student",
-                    credit: increment(2000),
-                    updatedAt: new Date().toISOString()
-                }, { merge: true });
-            }
-
-            // 🔥 ২. (Back Up) আপনার নির্দিষ্ট আইডি জোর করে আপডেট করা হচ্ছে
-            // যাতে আইডি মিসম্যাচ হলেও আপনার কাজ হয়ে যায়
-            const mySpecificId = "user_3875xZsn5905WFMP2791wC6atoU"; 
-            
-            console.log(`🚀 FORCE UPDATING YOUR ID: ${mySpecificId}`);
-            await setDoc(doc(db, "users", mySpecificId), {
+            // 🔥 DYNAMIC UPDATE: যে ইউজার পেমেন্ট করেছে, শুধু তার ডকুমেন্ট আপডেট হবে
+            await setDoc(userRef, {
                 plan: "student",
                 credit: increment(2000), // প্রতি পেমেন্টে ২০০০ বাড়বে
-                totalCredit: 2000,       // কার্ডে দেখানোর জন্য
-                manualFix: true,
+                totalCredit: 2000,       // কার্ডের টোটাল লিমিট
                 updatedAt: new Date().toISOString()
-            }, { merge: true });
-
-            console.log("✅ SUCCESS: Force update complete.");
-
+            }, { merge: true }); // merge: true দিলে আগের ডাটা (নাম, ইমেইল) মুছবে না
+            
+            console.log(`✅ SUCCESS: Plan updated for User: ${userId}`);
         } catch (error) {
-            console.error("❌ DB Update Error:", error);
-            // Vercel লগে যদি এই এরর দেখেন, তার মানে Env Variable সমস্যা
-            return new Response('DB Error', { status: 500 });
+            console.error(`❌ DB Update Failed for ${userId}:`, error);
+            return new Response('Database Error', { status: 500 });
         }
+    } else {
+        console.log(`⚠️ Skipped: Status is '${status}' or UserID missing.`);
     }
   }
 
