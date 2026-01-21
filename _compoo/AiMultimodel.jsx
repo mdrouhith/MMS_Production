@@ -16,12 +16,19 @@ import {
 import { useSelectedModel } from "@/context/SelectedModelContext";
 import ReactMarkdown from "react-markdown"; 
 import { useChat } from "@/context/ChatContext";
-
-// 🔥 Syntax Highlighting
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-// --- সাব-কম্পোনেন্ট ১: প্রফেশনাল কোড ব্লক ---
+// 🟢 ফায়ারবেস এবং অথেন্টিকেশন ইম্পোর্ট
+import { useUser } from "@clerk/nextjs";
+import { db } from "@/config/FirebaseConfig";
+import { doc, onSnapshot } from "firebase/firestore";
+import { toast } from "sonner"; 
+
+// 🟢 নতুন ইম্পোর্ট: Pricing Modal (যাতে বাটনে ক্লিক করলে পেমেন্ট পেজ আসে)
+import { PricingModal } from "./PricingModal"; 
+
+// --- সাব-কম্পোনেন্ট ১: কোড ব্লক ---
 const CodeBlock = ({ language, value }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
@@ -32,7 +39,6 @@ const CodeBlock = ({ language, value }) => {
 
   return (
     <div className="relative group rounded-2xl overflow-hidden my-6 border border-white/10 shadow-2xl bg-[#0d0d0d] w-full animate-in fade-in zoom-in-95 duration-500">
-      {/* কোড হেডার - সুন্দর ডিজাইন */}
       <div className="flex items-center justify-between bg-[#1a1a1a] px-5 py-3 border-b border-white/5 select-none">
         <div className="flex items-center gap-2">
             <div className="flex gap-1.5 mr-2">
@@ -51,44 +57,24 @@ const CodeBlock = ({ language, value }) => {
                 copied ? "bg-emerald-500/20 text-emerald-400" : "bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
             }`}
         >
-          {copied ? (
-            <> <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" /> Copied! </>
-          ) : (
-            "Copy Code"
-          )}
+          {copied ? "Copied!" : "Copy Code"}
         </button>
       </div>
-
-      {/* কোড এরিয়া - ফন্ট এবং স্পেসিং ফিক্সড */}
       <div className="overflow-x-auto custom-scrollbar-code">
         <SyntaxHighlighter 
             language={language || 'javascript'} 
             style={vscDarkPlus} 
-            customStyle={{ 
-                margin: 0, 
-                padding: '2rem 1.5rem', 
-                fontSize: '0.85rem', 
-                background: 'transparent',
-                lineHeight: '1.7',
-                fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', monospace"
-            }}
-            codeTagProps={{
-                style: {
-                    fontFamily: 'inherit'
-                }
-            }}
+            customStyle={{ margin: 0, padding: '2rem 1.5rem', fontSize: '0.85rem', background: 'transparent', lineHeight: '1.7', fontFamily: "'JetBrains Mono', monospace" }}
+            codeTagProps={{ style: { fontFamily: 'inherit' } }}
         >
             {value}
         </SyntaxHighlighter>
       </div>
-      
-      {/* বটম বর্ডার ডেকোরেশন */}
-      <div className="absolute bottom-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-primary/20 to-transparent opacity-50" />
     </div>
   );
 };
 
-// --- সাব-কম্পোনেন্ট ২: মার্কডাউন রেন্ডারার ---
+// --- সাব-কম্পোনেন্ট ২: মার্কডাউন ---
 const MarkdownRenderer = ({ content, isUser }) => (
     <ReactMarkdown components={{
         code({ node, inline, className, children, ...props }) {
@@ -106,7 +92,7 @@ const MarkdownRenderer = ({ content, isUser }) => (
     </ReactMarkdown>
 );
 
-// --- সাব-কম্পোনেন্ট ৩: টাইপরাইটার ইফেক্ট ---
+// --- সাব-কম্পোনেন্ট ৩: টাইপরাইটার ---
 const TypewriterEffect = ({ text }) => {
   const [displayedText, setDisplayedText] = useState("");
   const indexRef = useRef(0);
@@ -122,11 +108,7 @@ const TypewriterEffect = ({ text }) => {
     }, 10);
     return () => clearInterval(intervalId);
   }, [text]);
-  return (
-    <div className="animate-in fade-in duration-300">
-        <MarkdownRenderer content={displayedText} isUser={false} />
-    </div>
-  );
+  return <div className="animate-in fade-in duration-300"><MarkdownRenderer content={displayedText} isUser={false} /></div>;
 };
 
 // --- মেইন কম্পোনেন্ট ---
@@ -135,6 +117,22 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
   const { aiModeList, selectedValues, updatePreference } = useSelectedModel();
   const chatContainerRefs = useRef({});
   const scrollContainerRef = useRef(null);
+  
+  // 🟢 ইউজার প্ল্যান স্টেট
+  const { user } = useUser();
+  const [userPlan, setUserPlan] = useState("free");
+
+  // 🟢 রিয়েল-টাইম প্ল্যান লিসেনার (এটি পেজ রিফ্রেশ ছাড়া তালা খুলে দিবে)
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(doc(db, "users", user.id), (docSnap) => {
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            setUserPlan(data.plan || "free");
+        }
+    });
+    return () => unsub();
+  }, [user]);
 
   const scroll = (direction) => {
     if (scrollContainerRef.current) {
@@ -154,6 +152,7 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
   return (
     <div className="relative w-full h-[calc(100vh-64px)] group overflow-hidden">
       
+      {/* Scroll Buttons */}
       <button onClick={() => scroll('left')} className="absolute left-4 top-1/2 -translate-y-1/2 z-40 p-3 rounded-full bg-background/80 border border-border/50 backdrop-blur-xl shadow-2xl hover:bg-primary hover:text-white transition-all opacity-0 group-hover:opacity-100 hidden md:flex"><ChevronLeft className="w-6 h-6" /></button>
       <button onClick={() => scroll('right')} className="absolute right-4 top-1/2 -translate-y-1/2 z-40 p-3 rounded-full bg-background/80 border border-border/50 backdrop-blur-xl shadow-2xl hover:bg-primary hover:text-white transition-all opacity-0 group-hover:opacity-100 hidden md:flex"><ChevronRight className="w-6 h-6" /></button>
 
@@ -162,6 +161,9 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
             const currentVal = selectedValues[model.model] || "";
             const modelMessages = messages?.[model.model] || [];
             const shouldShow = model.enable || modelMessages.length > 0;
+
+            // 🟢 মেইন লজিক: যদি মডেল প্রিমিয়াম হয় এবং প্ল্যান 'pro' না হয়, তাহলে লক থাকবে
+            const isLocked = model.premium && userPlan !== "pro";
 
             return (
             <div key={index} className={`flex flex-col h-full transition-all duration-500 shrink-0 border-r border-border/40 snap-start ${shouldShow ? "min-w-[500px] w-[500px]" : "min-w-[80px] w-[80px] items-center pt-4"}`}>
@@ -179,11 +181,22 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
                             }}>
                                 <SelectTrigger className="w-[200px] h-9 text-xs"><SelectValue placeholder="Select Model" /></SelectTrigger>
                                 <SelectContent className="backdrop-blur-xl">
-                                    {model.subModel?.map(sub => (
-                                        <SelectItem key={sub.id} value={sub.id} className="text-xs">
-                                            <div className="flex items-center gap-2">{sub.name} {sub.premium && <Crown className="w-3 h-3 text-amber-500" />}</div>
-                                        </SelectItem>
-                                    ))}
+                                    {model.subModel?.map(sub => {
+                                        // 🟢 সাব-মডেল লক লজিক
+                                        const isSubLocked = sub.premium && userPlan !== "pro";
+                                        return (
+                                            <SelectItem key={sub.id} value={sub.id} disabled={isSubLocked} className="text-xs">
+                                                <div className="flex items-center justify-between w-full gap-2">
+                                                    <span>{sub.name}</span>
+                                                    {sub.premium && (
+                                                        isSubLocked 
+                                                        ? <Lock className="w-3 h-3 text-muted-foreground" /> 
+                                                        : <Crown className="w-3 h-3 text-amber-500" />
+                                                    )}
+                                                </div>
+                                            </SelectItem>
+                                        );
+                                    })}
                                 </SelectContent>
                             </Select>
                         )}
@@ -193,12 +206,21 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
 
                 {shouldShow && (
                     <div ref={(el) => (chatContainerRefs.current[model.model] = el)} className={`flex-1 overflow-y-auto p-5 pb-40 space-y-6 transition-all duration-300 ${!model.enable ? "bg-muted/5" : ""}`}>
-                        {model.premium ? (
+                        
+                        {/* 🟢 লক স্ক্রিন: এখানে PricingModal যোগ করা হয়েছে */}
+                        {isLocked ? (
                             <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in zoom-in-95 duration-700">
                                 <div className="w-20 h-20 bg-amber-500/10 rounded-3xl flex items-center justify-center mb-6 ring-1 ring-amber-500/20"><Lock className="w-10 h-10 text-amber-500" /></div>
                                 <h3 className="text-xl font-bold mb-2 flex items-center gap-2">Premium Model <Sparkles className="w-5 h-5 text-amber-500" /></h3>
-                                <p className="text-sm text-muted-foreground mb-6 max-w-[250px]">Upgrade to unlock {model.model}'s advanced capabilities.</p>
-                                <button className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold text-sm shadow-xl hover:scale-105 transition-all active:scale-95">Upgrade to Pro</button>
+                                <p className="text-sm text-muted-foreground mb-6 max-w-[250px]">Upgrade to Student Plan ($3) to unlock {model.model} and get 2000 credits.</p>
+                                
+                                {/* 🔥 বাটনে ক্লিক করলে এখন Pricing Modal ওপেন হবে */}
+                                <PricingModal>
+                                    <button className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold text-sm shadow-xl hover:scale-105 transition-all active:scale-95">
+                                        Upgrade to Pro
+                                    </button>
+                                </PricingModal>
+
                             </div>
                         ) : (
                             <>
