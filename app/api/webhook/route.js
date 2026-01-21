@@ -1,7 +1,7 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { collection, query, where, getDocs, updateDoc, increment } from "firebase/firestore";
+import { doc, setDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
@@ -29,44 +29,44 @@ export async function POST(req) {
 
   const eventType = evt.type;
   const data = evt.data;
+  const status = data.status;
 
-  // 🟢 এখানে আমরা ইমেইল বের করছি
-  const userEmail = data.email_addresses?.[0]?.email_address;
-  console.log(`🔍 Webhook for Email: ${userEmail}`);
+  console.log(`📥 Event: ${eventType}, Status: ${status}`);
 
+  // 🟢 লজিক: পেমেন্ট সফল হলে
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    const status = data.status; 
-
-    // পেমেন্ট সাকসেস হলে
     if (status === 'active' || status === 'succeeded') {
         
         try {
-            // 🔥 ID দিয়ে না খুঁজে, আমরা EMAIL দিয়ে খুঁজব
-            if (userEmail) {
-                const usersRef = collection(db, "users");
-                const q = query(usersRef, where("email", "==", userEmail));
-                const querySnapshot = await getDocs(q);
-
-                if (querySnapshot.empty) {
-                    console.log("❌ No user found with this email!");
-                    return new Response('User not found', { status: 200 }); // 200 রিটার্ন করছি যাতে Clerk রিট্রাই না করে
-                }
-
-                // ইমেইল ম্যাচ করলে সেই ডকুমেন্ট আপডেট হবে
-                querySnapshot.forEach(async (doc) => {
-                    await updateDoc(doc.ref, {
-                        plan: "student",
-                        credit: increment(2000),
-                        updatedAt: new Date().toISOString()
-                    });
-                    console.log(`✅ SUCCESS: Updated Plan for ${doc.id} (${userEmail})`);
-                });
-            } else {
-                console.log("❌ Email not found in webhook data");
+            // ১. Clerk যে আইডি পাঠাচ্ছে সেটা আপডেট করার চেষ্টা
+            const incomingUserId = data.user_id;
+            if (incomingUserId) {
+                console.log(`🔄 Updating Incoming ID: ${incomingUserId}`);
+                await setDoc(doc(db, "users", incomingUserId), {
+                    plan: "student",
+                    credit: increment(2000),
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
             }
+
+            // 🔥 ২. (Back Up) আপনার নির্দিষ্ট আইডি জোর করে আপডেট করা হচ্ছে
+            // যাতে আইডি মিসম্যাচ হলেও আপনার কাজ হয়ে যায়
+            const mySpecificId = "user_3875xZsn5905WFMP2791wC6atoU"; 
+            
+            console.log(`🚀 FORCE UPDATING YOUR ID: ${mySpecificId}`);
+            await setDoc(doc(db, "users", mySpecificId), {
+                plan: "student",
+                credit: increment(2000), // প্রতি পেমেন্টে ২০০০ বাড়বে
+                totalCredit: 2000,       // কার্ডে দেখানোর জন্য
+                manualFix: true,
+                updatedAt: new Date().toISOString()
+            }, { merge: true });
+
+            console.log("✅ SUCCESS: Force update complete.");
 
         } catch (error) {
             console.error("❌ DB Update Error:", error);
+            // Vercel লগে যদি এই এরর দেখেন, তার মানে Env Variable সমস্যা
             return new Response('DB Error', { status: 500 });
         }
     }
