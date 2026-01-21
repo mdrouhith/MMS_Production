@@ -1,11 +1,11 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { doc, setDoc } from "firebase/firestore"; // 🟢 updateDoc এর বদলে setDoc আনা হয়েছে
+import { doc, setDoc, getDoc, collection, query, where, getDocs, updateDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-  if (!WEBHOOK_SECRET) return new Response('Error: Secret missing', { status: 500 });
+  if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
 
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
@@ -13,7 +13,7 @@ export async function POST(req) {
   const svix_signature = headerPayload.get("svix-signature");
 
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Error: Missing headers', { status: 400 });
+    return new Response('Header missing', { status: 400 });
   }
 
   const payload = await req.json();
@@ -22,45 +22,61 @@ export async function POST(req) {
   let evt;
 
   try {
-    evt = wh.verify(body, {
-      "svix-id": svix_id,
-      "svix-timestamp": svix_timestamp,
-      "svix-signature": svix_signature,
-    });
+    evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
   } catch (err) {
-    console.error('Verify Failed:', err);
-    return new Response('Error verifying webhook', { status: 400 });
+    return new Response('Verify error', { status: 400 });
   }
 
   const eventType = evt.type;
   const data = evt.data;
 
-  // লগ দেখুন Vercel এ
-  console.log(`Checking Event: ${eventType}`);
-  console.log(`Data Status: ${data.status}, UserID: ${data.user_id}`);
-
+  // 🟢 এখানে আপনার আসল ডকুমেন্ট খুঁজে বের করার লজিক
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     const userId = data.user_id; 
     const status = data.status; 
+    // Clerk থেকে ইমেইল এড্রেস বের করার চেষ্টা (সব সময় থাকে না, তবে চেষ্টা করা হচ্ছে)
+    const userEmail = data.email_addresses?.[0]?.email_address; 
 
-    // 🟢 'active' অথবা 'succeeded' দুটোই চেক করা হচ্ছে (Stripe এর ভিন্ন রেসপন্সের জন্য)
     if ((status === 'active' || status === 'succeeded') && userId) {
-        const userRef = doc(db, "users", userId);
         
-        try {
-            // 🔥 updateDoc সরিয়ে setDoc দেওয়া হলো
-            // merge: true মানে আগের ডাটা মুছবে না, শুধু plan আপডেট করবে
-            await setDoc(userRef, {
-                plan: "student" 
-            }, { merge: true }); 
+        console.log(`🔍 Looking for user: ${userId}`);
+        
+        let targetDocRef = doc(db, "users", userId); // ডিফল্ট টার্গেট: User ID
+        
+        // 🚀 স্পেশাল চেক: যদি আপনার সিস্টেমে ইমেইল দিয়ে ডকুমেন্ট সেভ করা থাকে
+        if (userEmail) {
+            // চেক করি ইমেইল দিয়ে কোনো ডকুমেন্ট আছে কি না
+            const emailDocRef = doc(db, "users", userEmail);
+            const emailDocSnap = await getDoc(emailDocRef);
             
-            console.log(`✅ FORCE UPDATE SUCCESS: User ${userId} is now STUDENT`);
-        } catch (error) {
-            console.error("❌ Database Write Error:", error);
-            return new Response('DB Write Failed', { status: 500 });
+            if (emailDocSnap.exists()) {
+                console.log(`✅ Found document by Email: ${userEmail}`);
+                targetDocRef = emailDocRef; // টার্গেট চেঞ্জ করে ইমেইল ডকুমেন্ট করা হলো
+            } else {
+                // যদি ইমেইল দিয়ে না থাকে, তবে দেখি User ID ডকুমেন্টটা আছে কি না
+                 const idDocSnap = await getDoc(targetDocRef);
+                 if(idDocSnap.exists()){
+                     console.log(`✅ Found document by User ID: ${userId}`);
+                 } else {
+                     console.log(`⚠️ No doc found, creating new one for ${userId}`);
+                 }
+            }
         }
-    } else {
-        console.log("⚠️ Condition Failed: Status or UserID missing");
+
+        try {
+            // 🔥 ফাইনাল আপডেট (যেটাতেই হোক, আপডেট হবেই)
+            await setDoc(targetDocRef, {
+                plan: "student",
+                credit: increment(2000), 
+                paymentId: data.id,
+                updatedAt: new Date().toISOString()
+            }, { merge: true });
+            
+            console.log(`🎉 SUCCESS: Plan updated to STUDENT for ${targetDocRef.id}`);
+        } catch (error) {
+            console.error("❌ DB Update Error:", error);
+            return new Response('DB Error', { status: 500 });
+        }
     }
   }
 
