@@ -1,10 +1,11 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { doc, setDoc, increment } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, setDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
   if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
 
   const headerPayload = await headers();
@@ -28,35 +29,63 @@ export async function POST(req) {
   }
 
   const data = evt.data;
-  const status = data.status;
+  const eventType = evt.type;
 
-  console.log(`⚡ Event Received. Status: ${status}`);
+  // 🕵️‍♂️ গোয়েন্দা লজিক: আইডি বা ইমেইল খোঁজা হচ্ছে বিভিন্ন জায়গায়
+  let targetUserId = data.user_id || data.client_reference_id || data.metadata?.userId || data.metadata?.user_id;
+  let targetEmail = data.email || data.customer_email || data.email_addresses?.[0]?.email_address;
 
-  // 🟢 আপনার স্পেসিফিক আইডি (যেটা লগইন করলে আসে)
-  const myUserId = "user_3875xZsn5905WFMP2791wC6atoU"; 
+  console.log(`🔍 Hunting for User... ID Found: ${targetUserId}, Email Found: ${targetEmail}`);
 
-  // 🔥 লজিক: পেমেন্ট অ্যাক্টিভ হলেই হলো, আর কিছু দেখার দরকার নেই
-  if (status === 'active' || status === 'succeeded') {
-      try {
-          console.log(`🚀 Blindly Force Updating User: ${myUserId}`);
+  if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
+    const status = data.status;
 
-          // কোনো শর্ত ছাড়াই আপনার আইডি আপডেট হবে
-          await setDoc(doc(db, "users", myUserId), {
-              plan: "student",
-              credit: increment(2000), 
-              totalCredit: 2000,
-              lastPaymentStatus: status,
-              updatedAt: new Date().toISOString()
-          }, { merge: true });
+    if (status === 'active' || status === 'succeeded') {
+        
+        try {
+            let userDocRef = null;
 
-          console.log("✅ SUCCESS: Account Force Unlocked!");
-          
-      } catch (error) {
-          console.error("❌ DB Error (Check Firebase Config):", error);
-          return new Response('DB Error', { status: 500 });
-      }
-  } else {
-      console.log("⚠️ Payment not active yet.");
+            // ১. যদি সরাসরি আইডি পাওয়া যায় (সবচেয়ে ভালো)
+            if (targetUserId) {
+                console.log(`🎯 Found ID directly: ${targetUserId}`);
+                userDocRef = doc(db, "users", targetUserId);
+            } 
+            // ২. যদি আইডি না থাকে, কিন্তু ইমেইল থাকে -> ডাটাবেস খুঁজে আইডি বের করো
+            else if (targetEmail) {
+                console.log(`📧 Found Email: ${targetEmail}, searching in DB...`);
+                const usersRef = collection(db, "users");
+                const q = query(usersRef, where("email", "==", targetEmail));
+                const querySnapshot = await getDocs(q);
+
+                if (!querySnapshot.empty) {
+                    const foundDoc = querySnapshot.docs[0];
+                    userDocRef = foundDoc.ref;
+                    console.log(`✅ User found via Email! ID is: ${foundDoc.id}`);
+                } else {
+                    console.log("❌ Email exists in webhook but NOT in Database.");
+                }
+            }
+
+            // ৩. ফাইনাল আপডেট (যাকে পাওয়া গেছে তাকেই আপডেট করা হবে)
+            if (userDocRef) {
+                await setDoc(userDocRef, {
+                    plan: "student",
+                    credit: increment(2000), 
+                    totalCredit: 2000,
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
+
+                console.log(`🎉 SUCCESS: Plan Updated for the Real User!`);
+            } else {
+                // ⚠️ যদি সব ফেল করে, তখন লগে পুরো ডাটা দেখাবে যাতে আমরা বুঝতে পারি
+                console.log("❌ FAILED: Could not identify the user. Payload Dump:", JSON.stringify(data));
+            }
+
+        } catch (error) {
+            console.error("❌ DB Update Error:", error);
+            return new Response('DB Error', { status: 500 });
+        }
+    }
   }
 
   return new Response('Webhook received', { status: 200 });
