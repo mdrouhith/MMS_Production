@@ -11,7 +11,7 @@ export async function POST(req) {
     return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
-  // 🟢 FIX 1: Next.js 16 এর জন্য await headers() ব্যবহার করা হয়েছে
+  // 🟢 FIX 1: Next.js 16 এর জন্য await headers() ব্যবহার করা হয়েছে
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
@@ -47,27 +47,26 @@ export async function POST(req) {
   // 🟢 FIX 2: আমরা এখন Subscription ইভেন্ট ধরছি
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
-    const userId = data.user_id; // Clerk সাবস্ক্রিপশন ইভেন্টে 'user_id' পাঠায়
-    const status = data.status; // status হতে পারে 'active', 'unpaid' ইত্যাদি
+    const userId = data.user_id; 
+    const status = data.status; 
 
     console.log(`👤 User ID: ${userId}, Status: ${status}`);
 
-    // যদি স্ট্যাটাস 'active' হয়, তার মানে পেমেন্ট সফল
+    // যদি স্ট্যাটাস 'active' হয়, তার মানে পেমেন্ট সফল
     if (status === 'active' && userId) {
         const userRef = doc(db, "users", userId);
         
         try {
-            // 🟢 FIX 3: আপনার বলা 'student' প্ল্যান আপডেট করা হচ্ছে
+            // 🟢 FIX 3: আপনার বলা 'student' প্ল্যান এবং ২০০০ ক্রেডিট আপডেট
             await updateDoc(userRef, {
-                plan: "student", // 'pro' এর বদলে 'student'
-                credit: increment(2000), 
-                paymentId: data.id, // সাবস্ক্রিপশন আইডি সেভ রাখা হলো
+                plan: "student", 
+                credit: increment(2000), // 🔥 নিশ্চিত করুন ডাটাবেসে নাম 'credit' ই আছে
+                paymentId: data.id, 
                 lastResetDate: new Date().toISOString().split('T')[0]
             });
             console.log(`🎉 Success: User ${userId} is now a STUDENT with 2000 credits!`);
         } catch (error) {
             console.error("❌ Firestore Update Error:", error);
-            // ইউজার না থাকলে এরর দিতে পারে, সেটা হ্যান্ডেল করা হলো
             return new Response('Error updating user data', { status: 500 });
         }
     }
