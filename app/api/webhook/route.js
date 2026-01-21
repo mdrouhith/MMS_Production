@@ -6,7 +6,9 @@ import { doc, getDoc, setDoc, increment } from "firebase/firestore";
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-  if (!WEBHOOK_SECRET) return new Response('Secret missing', { status: 500 });
+  if (!WEBHOOK_SECRET) {
+    return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
+  }
 
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
@@ -14,7 +16,7 @@ export async function POST(req) {
   const svix_signature = headerPayload.get("svix-signature");
 
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Header missing', { status: 400 });
+    return new Response('Error: Missing svix headers', { status: 400 });
   }
 
   const payload = await req.json();
@@ -23,89 +25,101 @@ export async function POST(req) {
   let evt;
 
   try {
-    evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
+    evt = wh.verify(body, {
+      "svix-id": svix_id,
+      "svix-timestamp": svix_timestamp,
+      "svix-signature": svix_signature,
+    });
   } catch (err) {
-    return new Response('Verify error', { status: 400 });
+    return new Response('Error verifying webhook', { status: 400 });
   }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // 1. User Identification
+  // ১. ইউজার সনাক্তকরণ
   const payer = data.payer || {};
   const userId = payer.user_id; 
   const userEmail = payer.email;
   const status = data.status;
 
-  // 🟢 FIX: Active Plan খোঁজা (Items array এর মধ্যে লুপ চালিয়ে)
-  // আগে আমরা items[0] নিচ্ছিলাম, যেটা ভুল ছিল।
+  // 🟢 FIX: আমরা সরাসরি data.plan খুঁজব না। আমরা items এর ভেতর খুঁজব।
+  // লজিক: items এর মধ্যে এমন প্ল্যান খোঁজো যার টাকা > ০ (অর্থাৎ Student Plan)
   let activeItem = null;
   if (data.items && data.items.length > 0) {
-    // আমরা সেই আইটেম খুঁজব যার টাকা > ০ এবং স্ট্যাটাস একটিভ
-    activeItem = data.items.find(item => item.plan.amount > 0 && item.status === 'active');
-    
-    // যদি একটিভ না পাই, তাহলে অন্তত সেই আইটেম নিব যার টাকা > ০ (নতুন পেমেন্টের ক্ষেত্রে)
-    if (!activeItem) {
-        activeItem = data.items.find(item => item.plan.amount > 0);
-    }
+      activeItem = data.items.find(item => item.plan.amount > 0);
+      
+      // যদি Paid plan না পাই, তবেই প্রথমটা (Free) নিব
+      if (!activeItem) {
+          activeItem = data.items[0];
+      }
   }
 
-  // যদি তাও কিছু না পাই, ডিফল্ট ভ্যালু (Skip আটকানোর জন্য)
-  const planAmount = activeItem ? activeItem.plan.amount : 0;
+  // সঠিক অ্যামাউন্ট এবং স্লাগ বের করা
+  const planAmount = activeItem?.plan?.amount || 0;
+  const planSlug = activeItem?.plan?.slug || "";
   const currentPeriodStart = data.current_period_start;
 
-  console.log(`🔍 Smart Check -> User: ${userId} | Found Active Amount: ${planAmount}`);
+  console.log(`🛡️ SMART CHECK -> User: ${userId} | Amount: ${planAmount}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
+    
     if ((status === 'active' || status === 'succeeded') && userId) {
         
-        // 🛑 যদি আসলেই কোনো Paid Plan খুঁজে না পাওয়া যায়, তখন Skip করব
-        if (planAmount === 0) {
-            console.log("⚠️ No Active Paid Plan found in items. Skipping update.");
-            return new Response('Skipped (No Paid Plan)', { status: 200 });
-        }
-
         const userRef = doc(db, "users", userId);
 
-        try {
-            // ১. আগে ডাটাবেস চেক করি (ক্রেডিট ডুপ্লিকেট আটকানোর জন্য)
-            const userSnap = await getDoc(userRef);
-            let shouldAddCredit = true;
+        // 🛑 CASE 1: ফ্রি প্ল্যান বা ০ টাকার ট্রানজেকশন (ক্রেডিট বাড়বে না)
+        // যেহেতু Amount 0, তাই আমরা এখানে ক্রেডিট এড করব না।
+        // কিন্তু ডাটাবেসে Plan টা 'free' করে দিব যাতে ইউজার বোঝে সে ফ্রি-তে আছে।
+        if (planAmount <= 0) {
+            console.log("📉 Free/Downgrade detected. Setting plan to Free.");
+            
+            await setDoc(userRef, {
+                plan: "free",
+                updatedAt: new Date().toISOString()
+                // নোটিশ: এখানে credit ফিল্ড নেই, তাই ক্রেডিট যা ছিল তাই থাকবে।
+            }, { merge: true });
 
+            return new Response('Plan Set to Free (No Credit Added)', { status: 200 });
+        }
+
+        // ✅ CASE 2: স্টুডেন্ট প্ল্যান (টাকা > ০)
+        try {
+            const userSnap = await getDoc(userRef);
+            
             if (userSnap.exists()) {
                 const userData = userSnap.data();
-                // যদি দেখি এই মাসের বিলিং ডেট আগেই সেভ করা আছে
+                
+                // 🟢 ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে পেয়েছে কি না
                 if (userData.lastBillingPeriod === currentPeriodStart) {
-                    shouldAddCredit = false;
-                    console.log("🛑 Same billing period matched. Keeping plan active but NO extra credit.");
+                    console.log("🛑 Credit already given for this month. Skipping.");
+                    
+                    // আনলক নিশ্চিত করছি (যদি মিস হয়ে থাকে)
+                    await setDoc(userRef, { plan: "student" }, { merge: true });
+                    
+                    return new Response('Already Processed', { status: 200 });
                 }
             }
 
-            // ২. আপডেট ডাটা তৈরি
-            const updateData = {
-                plan: "student", // ✅ পেমেন্ট থাকলে আনলক হবেই
+            console.log(`🚀 Valid Payment! Adding 2000 Credits.`);
+
+            // সব ফিল্টার পাস করলে আপডেট হবে
+            await setDoc(userRef, {
+                plan: "student",
+                credit: increment(2000), 
+                totalCredit: 2000,
                 paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart, // ট্র্যাকিং এর জন্য ডেট আপডেট
+                lastBillingPeriod: currentPeriodStart, // ✅ এই মাসের টোকেন সেভ রাখলাম
                 updatedAt: new Date().toISOString()
-            };
-
-            // ৩. ক্রেডিট শুধুমাত্র তখনই এড হবে যদি নতুন মাস হয়
-            if (shouldAddCredit) {
-                updateData.credit = increment(2000);
-                updateData.totalCredit = 2000;
-                console.log("🚀 Adding 2000 Credits (Fresh Billing Cycle)");
-            }
-
-            // ৪. ফাইনাল সেভ
-            await setDoc(userRef, updateData, { merge: true });
+            }, { merge: true });
             
-            console.log(`✅ SUCCESS: DB Updated. Credits Added: ${shouldAddCredit}`);
+            console.log(`✅ SUCCESS: Credits Added.`);
 
         } catch (error) {
-            console.error("❌ DB Update Error:", error);
-            return new Response('DB Error', { status: 500 });
+            console.error("❌ DB Update Failed:", error);
+            return new Response('Database Error', { status: 500 });
         }
-    }
+    } 
   }
 
   return new Response('Webhook received', { status: 200 });
