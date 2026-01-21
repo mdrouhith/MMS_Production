@@ -162,8 +162,8 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
             const modelMessages = messages?.[model.model] || [];
             const shouldShow = model.enable || modelMessages.length > 0;
 
-            // 🟢 মেইন লজিক: যদি মডেল প্রিমিয়াম হয় এবং প্ল্যান 'pro' না হয়, তাহলে লক থাকবে
-            const isLocked = model.premium && userPlan !== "pro";
+            // 🟢 মেইন লজিক: এখন "pro" এর বদলে "student" চেক করবে
+            const isLocked = model.premium && userPlan !== "student";
 
             return (
             <div key={index} className={`flex flex-col h-full transition-all duration-500 shrink-0 border-r border-border/40 snap-start ${shouldShow ? "min-w-[500px] w-[500px]" : "min-w-[80px] w-[80px] items-center pt-4"}`}>
@@ -182,8 +182,8 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
                                 <SelectTrigger className="w-[200px] h-9 text-xs"><SelectValue placeholder="Select Model" /></SelectTrigger>
                                 <SelectContent className="backdrop-blur-xl">
                                     {model.subModel?.map(sub => {
-                                        // 🟢 সাব-মডেল লক লজিক
-                                        const isSubLocked = sub.premium && userPlan !== "pro";
+                                        // 🟢 সাব-মডেল লক লজিক: এখানেও "student" চেক করবে
+                                        const isSubLocked = sub.premium && userPlan !== "student";
                                         return (
                                             <SelectItem key={sub.id} value={sub.id} disabled={isSubLocked} className="text-xs">
                                                 <div className="flex items-center justify-between w-full gap-2">
@@ -217,7 +217,7 @@ function AiMultimodel({ onRetryModel, onToggleAction }) {
                                 {/* 🔥 বাটনে ক্লিক করলে এখন Pricing Modal ওপেন হবে */}
                                 <PricingModal>
                                     <button className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold text-sm shadow-xl hover:scale-105 transition-all active:scale-95">
-                                        Upgrade to Pro
+                                        Upgrade to Student
                                     </button>
                                 </PricingModal>
 
