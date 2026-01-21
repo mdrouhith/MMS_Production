@@ -1,14 +1,12 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { doc, updateDoc } from "firebase/firestore";
+import { doc, setDoc } from "firebase/firestore"; // 🟢 updateDoc এর বদলে setDoc আনা হয়েছে
 
 export async function POST(req) {
-  // ১. সিক্রেট কি চেক
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
   if (!WEBHOOK_SECRET) return new Response('Error: Secret missing', { status: 500 });
 
-  // ২. হেডার ভেরিফিকেশন (Next.js 16 সাপোর্টেড)
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
@@ -18,7 +16,6 @@ export async function POST(req) {
     return new Response('Error: Missing headers', { status: 400 });
   }
 
-  // ৩. ওয়েবহুক ভেরিফাই করা
   const payload = await req.json();
   const body = JSON.stringify(payload);
   const wh = new Webhook(WEBHOOK_SECRET);
@@ -35,29 +32,35 @@ export async function POST(req) {
     return new Response('Error verifying webhook', { status: 400 });
   }
 
-  // ৪. ইভেন্ট চেক এবং ডাটাবেস আপডেট
   const eventType = evt.type;
   const data = evt.data;
 
-  // যদি সাবস্ক্রিপশন ক্রিয়েট বা আপডেট হয়
-  if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    const userId = data.user_id;
-    const status = data.status;
+  // লগ দেখুন Vercel এ
+  console.log(`Checking Event: ${eventType}`);
+  console.log(`Data Status: ${data.status}, UserID: ${data.user_id}`);
 
-    // যদি স্ট্যাটাস 'active' হয় (মানে পেমেন্ট সাকসেস)
-    if (status === 'active' && userId) {
+  if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
+    const userId = data.user_id; 
+    const status = data.status; 
+
+    // 🟢 'active' অথবা 'succeeded' দুটোই চেক করা হচ্ছে (Stripe এর ভিন্ন রেসপন্সের জন্য)
+    if ((status === 'active' || status === 'succeeded') && userId) {
         const userRef = doc(db, "users", userId);
         
         try {
-            // 🔥 মেইন কাজ: শুধু প্ল্যান আপডেট করা হচ্ছে
-            await updateDoc(userRef, {
-                plan: "student"
-            });
-            console.log(`✅ Success: User ${userId} is now a STUDENT (Unlocked)`);
+            // 🔥 updateDoc সরিয়ে setDoc দেওয়া হলো
+            // merge: true মানে আগের ডাটা মুছবে না, শুধু plan আপডেট করবে
+            await setDoc(userRef, {
+                plan: "student" 
+            }, { merge: true }); 
+            
+            console.log(`✅ FORCE UPDATE SUCCESS: User ${userId} is now STUDENT`);
         } catch (error) {
-            console.error("❌ Database Update Failed:", error);
-            return new Response('DB Update Failed', { status: 500 });
+            console.error("❌ Database Write Error:", error);
+            return new Response('DB Write Failed', { status: 500 });
         }
+    } else {
+        console.log("⚠️ Condition Failed: Status or UserID missing");
     }
   }
 
