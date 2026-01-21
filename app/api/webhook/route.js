@@ -1,27 +1,24 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { doc, updateDoc, increment } from "firebase/firestore";
+import { doc, updateDoc } from "firebase/firestore";
 
 export async function POST(req) {
+  // ১. সিক্রেট কি চেক
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+  if (!WEBHOOK_SECRET) return new Response('Error: Secret missing', { status: 500 });
 
-  if (!WEBHOOK_SECRET) {
-    console.error('❌ Error: WEBHOOK_SECRET is missing');
-    return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
-  }
-
-  // 🟢 FIX 1: Next.js 16 এর জন্য await headers() ব্যবহার করা হয়েছে
+  // ২. হেডার ভেরিফিকেশন (Next.js 16 সাপোর্টেড)
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
   const svix_signature = headerPayload.get("svix-signature");
 
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Error: Missing svix headers', { status: 400 });
+    return new Response('Error: Missing headers', { status: 400 });
   }
 
-  // Payload প্রসেসিং
+  // ৩. ওয়েবহুক ভেরিফাই করা
   const payload = await req.json();
   const body = JSON.stringify(payload);
   const wh = new Webhook(WEBHOOK_SECRET);
@@ -34,43 +31,35 @@ export async function POST(req) {
       "svix-signature": svix_signature,
     });
   } catch (err) {
-    console.error('❌ Error verifying webhook:', err);
+    console.error('Verify Failed:', err);
     return new Response('Error verifying webhook', { status: 400 });
   }
 
-  // ইভেন্ট ডাটা
+  // ৪. ইভেন্ট চেক এবং ডাটাবেস আপডেট
   const eventType = evt.type;
   const data = evt.data;
 
-  console.log(`📥 Webhook Event: ${eventType}`);
-
-  // 🟢 FIX 2: আমরা এখন Subscription ইভেন্ট ধরছি
+  // যদি সাবস্ক্রিপশন ক্রিয়েট বা আপডেট হয়
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    
-    const userId = data.user_id; 
-    const status = data.status; 
+    const userId = data.user_id;
+    const status = data.status;
 
-    console.log(`👤 User ID: ${userId}, Status: ${status}`);
-
-    // যদি স্ট্যাটাস 'active' হয়, তার মানে পেমেন্ট সফল
+    // যদি স্ট্যাটাস 'active' হয় (মানে পেমেন্ট সাকসেস)
     if (status === 'active' && userId) {
         const userRef = doc(db, "users", userId);
         
         try {
-            // 🟢 FIX 3: আপনার বলা 'student' প্ল্যান এবং ২০০০ ক্রেডিট আপডেট
+            // 🔥 মেইন কাজ: শুধু প্ল্যান আপডেট করা হচ্ছে
             await updateDoc(userRef, {
-                plan: "student", 
-                credit: increment(2000), // 🔥 নিশ্চিত করুন ডাটাবেসে নাম 'credit' ই আছে
-                paymentId: data.id, 
-                lastResetDate: new Date().toISOString().split('T')[0]
+                plan: "student"
             });
-            console.log(`🎉 Success: User ${userId} is now a STUDENT with 2000 credits!`);
+            console.log(`✅ Success: User ${userId} is now a STUDENT (Unlocked)`);
         } catch (error) {
-            console.error("❌ Firestore Update Error:", error);
-            return new Response('Error updating user data', { status: 500 });
+            console.error("❌ Database Update Failed:", error);
+            return new Response('DB Update Failed', { status: 500 });
         }
     }
   }
 
-  return new Response('Webhook received successfully', { status: 200 });
+  return new Response('Webhook received', { status: 200 });
 }
