@@ -4,19 +4,16 @@ import { aj } from "@/config/Arcjet";
 import { db } from "@/config/FirebaseConfig"; 
 import { doc, getDoc, setDoc, updateDoc, increment } from "firebase/firestore";
 
-// --- DYNAMIC CREDIT CONFIGURATION ---
+// মডেলের দামের লিস্ট
 const MODEL_WEIGHTS = {
-    // Level 1: Sosta (1 Credit)
     "google/gemini-2.0-flash-lite-preview-02-05:free": 1,
     "google/gemini-2.0-flash-exp:free": 1,
     "openai/gpt-4o-mini": 1,
     "google/gemini-flash-1.5": 1,
     "deepseek/deepseek-chat": 1,
-    // Level 2: Majhari (8 Credits)
     "google/gemini-pro-1.5": 8,
     "deepseek/deepseek-r1": 8,
     "meta-llama/llama-3.3-70b-instruct": 8,
-    // Level 3: Dami (20 Credits)
     "openai/gpt-4o": 20,
     "google/gemini-2.5-pro": 20,
     "cohere/command-r-plus-08-2024": 20
@@ -25,63 +22,70 @@ const MODEL_WEIGHTS = {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const model = body.model;
-    const rawMsg = body.msg; 
-    const parentModel = body.parentModel;
-    const userId = body.userId;
-    const userEmail = body.userEmail;
+    const { model, msg: rawMsg, parentModel, userId, userEmail, userName } = body;
 
     let msg = typeof rawMsg === 'string' ? rawMsg : (rawMsg?.content || JSON.stringify(rawMsg));
 
     if (!userId) return NextResponse.json({ error: "User ID missing" }, { status: 400 });
-    if (!msg || msg.trim().length === 0) return NextResponse.json({ error: "Empty message" }, { status: 400 });
 
-    // --- FIREBASE: FETCH USER & DAILY RESET LOGIC ---
     const userRef = doc(db, "users", userId);
     const userSnap = await getDoc(userRef);
     
     let userData = {};
-    const today = new Date().toISOString().split('T')[0]; // e.g., "2026-01-13"
+    const today = new Date().toISOString().split('T')[0];
 
+    // --- ১. নতুন ইউজার হ্যান্ডলিং (New User) ---
     if (!userSnap.exists()) {
         userData = {
+            name: userName || "User",
             email: userEmail || "unknown",
-            credit: 10, // Default signup credit
+            credit: 10, // ✅ নতুন ইউজার ১০ পাবে
             plan: "free",
             lastResetDate: today,
-            createdAt: new Date()
+            createdAt: new Date(),
+            lastActive: new Date()
         };
         await setDoc(userRef, userData);
     } else {
         userData = userSnap.data();
         
-        // --- DAILY RESET FOR FREE USERS ---
-        if (userData.plan === "free" && userData.lastResetDate !== today) {
-            await updateDoc(userRef, {
-                credit: 10, // Reset to 10 credits daily
-                lastResetDate: today
-            });
-            userData.credit = 10;
+        // --- ২. ডেইলি রিসেট লজিক (Daily Reset) ---
+        // যদি আজ রিসেট না হয়ে থাকে
+        if (userData.lastResetDate !== today) {
+            
+            // ⚠️ লজিক: ক্রেডিট যদি ১০ এর নিচে থাকে, তবেই ১০ এ টপ-আপ হবে।
+            // যদি ১০ এর বেশি থাকে (মানে সে কিনেছে), তবে আমরা হাত দিব না।
+            if ((userData.credit || 0) < 10) {
+                await updateDoc(userRef, {
+                    credit: 10,
+                    lastResetDate: today
+                });
+                userData.credit = 10;
+            } else {
+                // ইউজার কিনেছে (যেমন ১০০০ আছে), তাই শুধু ডেট আপডেট হবে, ক্রেডিট কমবে না
+                await updateDoc(userRef, {
+                    lastResetDate: today
+                });
+            }
         }
     }
 
-    // --- CALCULATE DYNAMIC COST ---
-    const baseWeight = MODEL_WEIGHTS[model] || 1; // Default to 1 if not found
-    const units = Math.ceil(msg.length / 2000); // 2000 chars = 1 Unit
+    // --- ৩. খরচের হিসাব ---
+    const baseWeight = MODEL_WEIGHTS[model] || 1;
+    const units = Math.ceil(msg.length / 2000);
     const actualCost = baseWeight * units;
 
-    // Check if user has enough credits
     if (userData.credit < actualCost) {
-        return NextResponse.json({ error: `Insufficient Credits. Need ${actualCost}, have ${userData.credit}` }, { status: 402 });
+        return NextResponse.json({ error: `Insufficient Credits` }, { status: 402 });
     }
 
-    // --- ARCJET PROTECTION ---
+    // --- ৪. Arcjet Security ---
     try {
       const decision = await aj.protect(req, { userId: userId, requested: 1 });
       if (decision.isDenied()) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
     } catch (e) { console.log("Arcjet skipped"); }
 
-    // --- OPENROUTER API CALL ---
+    // --- ৫. OpenRouter কল ---
     try {
       const response = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -89,7 +93,7 @@ export async function POST(req) {
           model: model, 
           messages: [{ role: "user", content: String(msg) }],
           temperature: 0.7,
-          max_tokens: 2000, // Limit output to prevent high cost
+          max_tokens: 2000,
         },
         {
           headers: {
@@ -102,7 +106,7 @@ export async function POST(req) {
 
       const aiReplyText = response.data.choices[0].message.content;
       
-      // --- DEDUCT CREDITS AFTER SUCCESS ---
+      // --- ৬. ক্রেডিট কাটা ---
       await updateDoc(userRef, {
           credit: increment(-actualCost), 
           lastActive: new Date()
@@ -115,11 +119,9 @@ export async function POST(req) {
       });
 
     } catch (apiError) {
-        console.error("OpenRouter Error:", apiError.message);
         return NextResponse.json({ error: "AI Service Error" }, { status: 500 });
     }
-
   } catch (error) {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: "Server Error" }, { status: 500 });
   }
 }

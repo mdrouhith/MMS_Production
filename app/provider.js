@@ -9,7 +9,6 @@ import { useUser } from "@clerk/nextjs";
 import { db } from "@/config/FirebaseConfig";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { SelectedModelProvider } from "@/context/SelectedModelContext";
-// 🟢 ১. নতুন ইম্পোর্ট (ChatContext)
 import { ChatProvider } from "@/context/ChatContext"; 
 
 export default function Provider({ children, ...props }) {
@@ -24,7 +23,9 @@ export default function Provider({ children, ...props }) {
   const CreateNewUser = async () => {
     if (!user) return;
 
-    const userRef = doc(db, "users", user?.primaryEmailAddress?.emailAddress);
+    // 🔴 আগে এখানে ইমেইল ছিল, যা ভুল। 
+    // ✅ এখন Clerk ID (user.id) দেওয়া হলো, যা route.js এর সাথে মিলবে।
+    const userRef = doc(db, "users", user.id);
     const userSnap = await getDoc(userRef);
 
     if (!userSnap.exists()) {
@@ -32,13 +33,14 @@ export default function Provider({ children, ...props }) {
         name: user?.fullName,
         email: user?.primaryEmailAddress?.emailAddress,
         createdAt: new Date(),
-        remainingMsg: 5,
+        // ❌ remainingMsg বাদ দেওয়া হলো (কারণ এটা আর লাগছে না)
         plan: "free",
-        credit: 1000,
+        credit: 10, // ✅ শুরুতে ১০ ক্রেডিট পাবে (১০০০ না)
+        lastResetDate: new Date().toISOString().split('T')[0] // ✅ ডেইলি রিসেটের জন্য ডেট সেট করা হলো
       };
 
       await setDoc(userRef, userData);
-      console.log("New User created in Firestore");
+      console.log("New User Synced Correctly via Provider ✅");
     } else {
       console.log("User already exists");
     }
@@ -53,22 +55,15 @@ export default function Provider({ children, ...props }) {
       {...props}
     >
       <SelectedModelProvider>
-        {/* 🟢 ২. ChatProvider দিয়ে র‍্যাপ করা হলো যাতে পুরো অ্যাপে চ্যাট ডাটা পাওয়া যায় */}
         <ChatProvider> 
-          
-          {/* 🟢 ৩. CSS ফিক্স: items-start এবং justify-start দেওয়া হলো যাতে সেন্টার না হয়ে যায় */}
           <SidebarProvider defaultOpen={true} className="flex flex-row items-start justify-start h-screen w-full">
-            
             <AppSidebar />
-            
-            {/* 🟢 ৪. মেইন কন্টেইনার ফিক্স: overflow-hidden দেওয়া হলো যাতে ডাবল স্ক্রলবার না আসে */}
             <main className="w-full flex-1 h-full flex flex-col items-start justify-start overflow-hidden">
               <div className="w-full h-full relative flex flex-col">
                 <AppHeader />
                 {children}
               </div>
             </main>
-
           </SidebarProvider>
         </ChatProvider>
       </SelectedModelProvider>

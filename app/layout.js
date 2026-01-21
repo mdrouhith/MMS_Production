@@ -1,7 +1,8 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import Provider from "./provider.js"; // This now works because of 'export default'
+import Provider from "./provider.js";
 import { ClerkProvider } from "@clerk/nextjs";
+import UserSync from "./UserSync"; // ✅ ১. এই ফাইলটি ইম্পোর্ট করুন
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -24,6 +25,7 @@ export default function RootLayout({ children }) {
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <ClerkProvider>
           <Provider>
+            <UserSync /> {/* ✅ ২. এই লাইনটি এখানে বসিয়ে দিন */}
             {children}
           </Provider>
         </ClerkProvider>
