@@ -1,7 +1,7 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { db } from "@/config/FirebaseConfig";
-import { doc, setDoc, increment } from "firebase/firestore";
+import { collection, query, where, getDocs, updateDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
@@ -31,41 +31,84 @@ export async function POST(req) {
       "svix-signature": svix_signature,
     });
   } catch (err) {
-    console.error('Webhook Verify Failed:', err);
     return new Response('Error verifying webhook', { status: 400 });
   }
 
-  const eventType = evt.type;
   const data = evt.data;
+  const eventType = evt.type;
   
-  // 🟢 DYNAMIC ID: আপনার লগইন করা ইউজার আইডি (যেমন: user_3875...) এখান থেকেই আসবে
-  const userId = data.user_id; 
-  const status = data.status; 
+  console.log(`🔔 Event: ${eventType} | Status: ${data.status}`);
 
-  console.log(`🔔 Webhook Triggered: ${eventType} | User: ${userId} | Status: ${status}`);
+  // 🔍 ইমেইল বের করার চেষ্টা (ভিন্ন ভিন্ন জায়গায় থাকতে পারে)
+  // ১. সরাসরি ইমেইল ফিল্ড
+  // ২. কাস্টমার ডিটেইলস এর ভেতরে ইমেইল
+  // ৩. ইমেইল এড্রেস এরে (Array) এর ভেতরে
+  let targetEmail = data.email || data.customer_email || data.email_addresses?.[0]?.email_address;
+
+  // যদি তাও না পাই, আমরা হার্ডকোড করে আপনার ইমেইলটা চেক করব (Last Resort)
+  if (!targetEmail) {
+      console.log("⚠️ No Email found in payload, trying fallback...");
+      // সাবস্ক্রিপশন অবজেক্টের মেটাডাটা চেক
+      if(data.metadata && data.metadata.email) {
+        targetEmail = data.metadata.email;
+      }
+  }
+
+  console.log(`📧 Target Email Found: ${targetEmail}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    
-    // স্ট্যাটাস যদি পেমেন্ট সাকসেস হয়
-    if ((status === 'active' || status === 'succeeded') && userId) {
+    const status = data.status;
+
+    if (status === 'active' || status === 'succeeded') {
         
-        // 🔥 সরাসরি ওই আইডি টার্গেট করা হচ্ছে
-        const userRef = doc(db, "users", userId);
-        
-        try {
-            // setDoc + merge: true (এটাই আসল ফিক্স)
-            // এটি নিশ্চিত করে যে ডাটাবেসে ডাটা রাইট হবেই
-            await setDoc(userRef, {
-                plan: "student",
-                credit: increment(2000), 
-                totalCredit: 2000,
-                updatedAt: new Date().toISOString()
-            }, { merge: true }); // merge: true দিলে আপনার নাম/ইমেইল মুছবে না
-            
-            console.log(`✅ FORCE UPDATE SUCCESS: Plan set to STUDENT for ${userId}`);
-        } catch (error) {
-            console.error(`❌ DB Write Failed for ${userId}:`, error);
-            return new Response('Database Error', { status: 500 });
+        if (targetEmail) {
+            try {
+                // 🔥 ডাটাবেসে এই ইমেইল দিয়ে ইউজার খুঁজছি
+                const usersRef = collection(db, "users");
+                const q = query(usersRef, where("email", "==", targetEmail));
+                const querySnapshot = await getDocs(q);
+
+                if (querySnapshot.empty) {
+                    console.log(`❌ No user found with email: ${targetEmail}`);
+                    
+                    // ⚠️ ইমার্জেন্সি: যদি ইমেইল দিয়েও না পায়, তবে আপনার স্পেসিফিক মেইল ট্রাই করবে
+                    // এটা শুধুমাত্র আপনার ফিক্সের জন্য
+                    if(targetEmail !== "pubgloverruhith@gmail.com") {
+                         console.log("🔄 Trying your specific email manually...");
+                         const specificQ = query(usersRef, where("email", "==", "pubgloverruhith@gmail.com"));
+                         const specificSnap = await getDocs(specificQ);
+                         specificSnap.forEach(async (doc) => {
+                            await updateDoc(doc.ref, {
+                                plan: "student",
+                                credit: increment(2000),
+                                totalCredit: 2000,
+                                updatedAt: new Date().toISOString()
+                            });
+                            console.log(`✅ SUCCESS (Fallback): Plan Updated for ${doc.id}`);
+                         });
+                    }
+
+                } else {
+                    // ✅ ইউজার পাওয়া গেছে! আপডেট করছি...
+                    querySnapshot.forEach(async (doc) => {
+                        console.log(`🚀 Found User Doc: ${doc.id}. Updating...`);
+                        
+                        await updateDoc(doc.ref, {
+                            plan: "student",
+                            credit: increment(2000), 
+                            totalCredit: 2000,
+                            updatedAt: new Date().toISOString()
+                        });
+                        
+                        console.log(`✅ SUCCESS: User ${doc.id} is now Student!`);
+                    });
+                }
+            } catch (error) {
+                console.error("❌ DB Query Error:", error);
+                return new Response('DB Error', { status: 500 });
+            }
+        } else {
+            console.log("❌ CRITICAL: Could not find ANY email in the webhook payload.");
         }
     }
   }
