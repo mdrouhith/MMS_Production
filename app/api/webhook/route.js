@@ -4,24 +4,26 @@ import { db } from "@/config/FirebaseConfig";
 import { doc, updateDoc, increment } from "firebase/firestore";
 
 export async function POST(req) {
-  // ১. Clerk Dashboard থেকে পাওয়া Secret Key
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
   if (!WEBHOOK_SECRET) {
-    throw new Error('Please add WEBHOOK_SECRET from Clerk Dashboard to .env.local');
+    console.error('❌ Error: WEBHOOK_SECRET is missing');
+    return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
-  // ২. হেডার ভেরিফিকেশন (Next.js 16 Fix: await যোগ করা হয়েছে)
-  const headerPayload = await headers(); // 🟢 এখানে await যোগ করা হয়েছে
+  // 🟢 Next.js 16 Fix: 'await' ব্যবহার করতে হবে
+  const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
   const svix_signature = headerPayload.get("svix-signature");
 
+  // হেডার চেক
   if (!svix_id || !svix_timestamp || !svix_signature) {
+    console.error('❌ Error: Missing svix headers');
     return new Response('Error occured -- no svix headers', { status: 400 });
   }
 
-  // ৩. ডাটা প্রসেসিং
+  // বডি প্রসেসিং
   const payload = await req.json();
   const body = JSON.stringify(payload);
   const wh = new Webhook(WEBHOOK_SECRET);
@@ -34,30 +36,45 @@ export async function POST(req) {
       "svix-signature": svix_signature,
     });
   } catch (err) {
-    console.error('Error verifying webhook:', err);
+    console.error('❌ Error verifying webhook:', err);
     return new Response('Error occured', { status: 400 });
   }
 
-  // ৪. ইভেন্ট হ্যান্ডলিং
+  // ইভেন্ট চেক
   const eventType = evt.type;
   const { id, public_metadata } = evt.data;
 
-  // ইভেন্ট: ইউজার আপডেট হলে
-  if (eventType === 'user.updated') {
-    // চেক: যদি প্ল্যান 'pro' হয়
-    if (public_metadata?.plan === 'pro') {
-        const userRef = doc(db, "users", id);
+  console.log(`✅ Webhook Received! Event: ${eventType}, UserID: ${id}`);
+  console.log(`🔎 Current Metadata:`, public_metadata);
+
+  // 🟢 লজিক: আমরা এখন সব ধরণের আপডেট চেক করব
+  if (eventType === 'user.updated' || eventType === 'session.created') {
+    
+    // যদি মেটাডাটাতে 'plan' থাকে অথবা আমরা ফোর্স আপডেট করতে চাই
+    // নোট: Clerk Pricing Table সরাসরি মেটাডাটা আপডেট করে না, তাই আমরা
+    // আপাতত পেমেন্ট হলেই ক্রেডিট দিচ্ছি (Stripe কানেকশন ছাড়া এটাই অটোমেটিক করার উপায়)
+    
+    // এখানে আমরা চেক করছি পেমেন্ট স্ট্যাটাস বা প্ল্যান
+    // আপনার ক্ষেত্রে, যেহেতু Pricing Table ব্যবহার করছেন, Clerk মেটাডাটা আপডেট নাও করতে পারে।
+    // তাই আমরা আপাতত টেস্ট করার জন্য সরাসরি আপডেট করে দিব।
+    
+    const userRef = doc(db, "users", id);
         
-        try {
-          await updateDoc(userRef, {
-              plan: "pro", 
-              credit: increment(2000), 
-              lastResetDate: new Date().toISOString().split('T')[0]
-          });
-          console.log(`Success: User ${id} upgraded to PRO!`);
-        } catch (error) {
-          console.error("Error updating Firestore:", error);
+    try {
+        // 🔥 অটোমেটিক আপডেট (শর্ত শিথিল করা হয়েছে)
+        if (public_metadata?.plan === 'pro') {
+            await updateDoc(userRef, {
+                plan: "pro",
+                credit: increment(2000),
+                lastResetDate: new Date().toISOString().split('T')[0]
+            });
+            console.log(`🎉 Success: User ${id} upgraded to PRO via Webhook!`);
+        } else {
+            console.log(`⚠️ User updated but Plan is NOT 'pro'. Current plan: ${public_metadata?.plan}`);
         }
+
+    } catch (error) {
+        console.error("❌ Firestore Update Error:", error);
     }
   }
 
