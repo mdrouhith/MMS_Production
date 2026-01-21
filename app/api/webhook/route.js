@@ -11,19 +11,17 @@ export async function POST(req) {
     return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
-  // 🟢 Next.js 16 Fix: 'await' ব্যবহার করতে হবে
+  // 🟢 FIX 1: Next.js 16 এর জন্য await headers() ব্যবহার করা হয়েছে
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
   const svix_signature = headerPayload.get("svix-signature");
 
-  // হেডার চেক
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    console.error('❌ Error: Missing svix headers');
-    return new Response('Error occured -- no svix headers', { status: 400 });
+    return new Response('Error: Missing svix headers', { status: 400 });
   }
 
-  // বডি প্রসেসিং
+  // Payload প্রসেসিং
   const payload = await req.json();
   const body = JSON.stringify(payload);
   const wh = new Webhook(WEBHOOK_SECRET);
@@ -37,46 +35,43 @@ export async function POST(req) {
     });
   } catch (err) {
     console.error('❌ Error verifying webhook:', err);
-    return new Response('Error occured', { status: 400 });
+    return new Response('Error verifying webhook', { status: 400 });
   }
 
-  // ইভেন্ট চেক
+  // ইভেন্ট ডাটা
   const eventType = evt.type;
-  const { id, public_metadata } = evt.data;
+  const data = evt.data;
 
-  console.log(`✅ Webhook Received! Event: ${eventType}, UserID: ${id}`);
-  console.log(`🔎 Current Metadata:`, public_metadata);
+  console.log(`📥 Webhook Event: ${eventType}`);
 
-  // 🟢 লজিক: আমরা এখন সব ধরণের আপডেট চেক করব
-  if (eventType === 'user.updated' || eventType === 'session.created') {
+  // 🟢 FIX 2: আমরা এখন Subscription ইভেন্ট ধরছি
+  if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
-    // যদি মেটাডাটাতে 'plan' থাকে অথবা আমরা ফোর্স আপডেট করতে চাই
-    // নোট: Clerk Pricing Table সরাসরি মেটাডাটা আপডেট করে না, তাই আমরা
-    // আপাতত পেমেন্ট হলেই ক্রেডিট দিচ্ছি (Stripe কানেকশন ছাড়া এটাই অটোমেটিক করার উপায়)
-    
-    // এখানে আমরা চেক করছি পেমেন্ট স্ট্যাটাস বা প্ল্যান
-    // আপনার ক্ষেত্রে, যেহেতু Pricing Table ব্যবহার করছেন, Clerk মেটাডাটা আপডেট নাও করতে পারে।
-    // তাই আমরা আপাতত টেস্ট করার জন্য সরাসরি আপডেট করে দিব।
-    
-    const userRef = doc(db, "users", id);
+    const userId = data.user_id; // Clerk সাবস্ক্রিপশন ইভেন্টে 'user_id' পাঠায়
+    const status = data.status; // status হতে পারে 'active', 'unpaid' ইত্যাদি
+
+    console.log(`👤 User ID: ${userId}, Status: ${status}`);
+
+    // যদি স্ট্যাটাস 'active' হয়, তার মানে পেমেন্ট সফল
+    if (status === 'active' && userId) {
+        const userRef = doc(db, "users", userId);
         
-    try {
-        // 🔥 অটোমেটিক আপডেট (শর্ত শিথিল করা হয়েছে)
-        if (public_metadata?.plan === 'pro') {
+        try {
+            // 🟢 FIX 3: আপনার বলা 'student' প্ল্যান আপডেট করা হচ্ছে
             await updateDoc(userRef, {
-                plan: "pro",
-                credit: increment(2000),
+                plan: "student", // 'pro' এর বদলে 'student'
+                credit: increment(2000), 
+                paymentId: data.id, // সাবস্ক্রিপশন আইডি সেভ রাখা হলো
                 lastResetDate: new Date().toISOString().split('T')[0]
             });
-            console.log(`🎉 Success: User ${id} upgraded to PRO via Webhook!`);
-        } else {
-            console.log(`⚠️ User updated but Plan is NOT 'pro'. Current plan: ${public_metadata?.plan}`);
+            console.log(`🎉 Success: User ${userId} is now a STUDENT with 2000 credits!`);
+        } catch (error) {
+            console.error("❌ Firestore Update Error:", error);
+            // ইউজার না থাকলে এরর দিতে পারে, সেটা হ্যান্ডেল করা হলো
+            return new Response('Error updating user data', { status: 500 });
         }
-
-    } catch (error) {
-        console.error("❌ Firestore Update Error:", error);
     }
   }
 
-  return new Response('Webhook received', { status: 200 });
+  return new Response('Webhook received successfully', { status: 200 });
 }
