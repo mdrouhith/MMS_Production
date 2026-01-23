@@ -21,72 +21,61 @@ export async function POST(req) {
 
   try {
     evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
-  } catch (err) { 
-    return new Response('Verify error', { status: 400 }); 
-  }
+  } catch (err) { return new Response('Verify error', { status: 400 }); }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // ১. ইউজার আইডি নিশ্চিত করা
+  // ১. ইউজার আইডি রিকভারি
   const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
-  const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email || "no-email";
-  const currentPeriodStart = data.current_period_start || new Date().toISOString();
-
   if (!userId) return new Response('No User ID', { status: 400 });
 
-  // ২. পেইড প্ল্যান খোঁজা (এটি এখন আরও শক্তিশালী)
-  let paidPlanFound = null;
+  // 🛡️ SMART LOCK: তারিখটিকে ফিক্সড করে দিলাম (YYYY-MM-DD)
+  // যদি Clerk থেকে তারিখ না আসে, তবে আমরা আজকের তারিখ ব্যবহার করব
+  // এতে একই দিনে দুইবার ক্রেডিট অ্যাড হওয়া অসম্ভব হবে।
+  const rawDate = data.current_period_start || new Date().toISOString();
+  const currentPeriodLock = rawDate.split('T')[0]; // শুধু YYYY-MM-DD অংশটুকু নিবে
+
+  // ২. পেইড প্ল্যান চেক
+  let isPaidPlan = false;
   if (data.items && Array.isArray(data.items)) {
-    // আমরা পুরো লিস্ট চেক করব, কোনো একটা আইটেমও যদি পেইড হয়
-    paidPlanFound = data.items.find(item => 
-      item.plan.amount > 0 && 
-      !item.plan.slug.toLowerCase().includes('free')
+    isPaidPlan = data.items.some(item => 
+      item.plan.amount > 0 && !item.plan.slug.toLowerCase().includes('free')
     );
   }
 
-  console.log(`📡 Event: ${eventType} | User: ${userId}`);
-  
   if (eventType === 'subscription.created' || eventType === 'subscription.updated' || eventType === 'subscriptionItem.freeTrialEnding') {
     
-    // 🛑 তোমার শর্ত: যদি কোনো পেইড প্ল্যান না পাওয়া যায় (অর্থাৎ ফ্রি প্ল্যান)
-    if (!paidPlanFound) {
-      console.log(`📉 No paid items found for ${userId}. Skipping DB update as per instructions.`);
-      return new Response('Success: No changes for free', { status: 200 });
-    }
+    // নির্দেশ অনুযায়ী: ফ্রি হলে কিছুই করবে না
+    if (!isPaidPlan) return new Response('No changes for free', { status: 200 });
 
-    // ✅ যদি পেইড প্ল্যান (Student) পাওয়া যায়
-    const planSlug = (paidPlanFound.plan.slug || "").toLowerCase();
-    
-    if (planSlug.includes('student') || paidPlanFound.plan.amount > 0) {
-      const userRef = doc(db, "users", userId);
+    const userRef = doc(db, "users", userId);
 
-      try {
-        const userSnap = await getDoc(userRef);
-        const userData = userSnap.exists() ? userSnap.data() : {};
+    try {
+      const userSnap = await getDoc(userRef);
+      const userData = userSnap.exists() ? userSnap.data() : {};
 
-        // ডুপ্লিকেট ক্রেডিট রোধ
-        if (userData.lastBillingPeriod === currentPeriodStart && userData.plan === "student") {
-          console.log("🛑 Duplicate check: Credit already added for this period.");
-          return new Response('Already Credited', { status: 200 });
-        }
-
-        console.log("🔥 ACTION: Upgrading to Student & Adding 2000 Credits...");
-
-        await setDoc(userRef, {
-          plan: "student",
-          credit: increment(2000), 
-          paymentEmail: userEmail,
-          lastBillingPeriod: currentPeriodStart,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        return new Response('Credit Added Success', { status: 200 });
-
-      } catch (error) {
-        console.error("❌ Firebase Write Error:", error);
-        return new Response('Database Error', { status: 500 });
+      // 🔥 এই চেকটিই ডুপ্লিকেট ক্রেডিট থামাবে
+      // যদি ডাটাবেসে আগের পিরিয়ড লক আর বর্তমান লক মিলে যায়, তবে ক্রেডিট অ্যাড হবে না।
+      if (userData.lastBillingPeriod === currentPeriodLock && userData.plan === "student") {
+        console.log(`🛑 Blocked Duplicate: Credit already added for ${currentPeriodLock}`);
+        return new Response('Already Credited for today/period', { status: 200 });
       }
+
+      console.log(`🚀 Adding 2000 credits to user: ${userId}`);
+
+      await setDoc(userRef, {
+        plan: "student",
+        credit: increment(2000), 
+        lastBillingPeriod: currentPeriodLock, // লক সেভ হলো
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      return new Response('Success: Credit Added', { status: 200 });
+
+    } catch (error) {
+      console.error("❌ Firebase Write Error:", error);
+      return new Response('Database Error', { status: 500 });
     }
   }
 
