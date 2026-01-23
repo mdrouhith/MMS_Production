@@ -20,61 +20,71 @@ export async function POST(req) {
   let evt;
 
   try {
-    evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
-  } catch (err) { return new Response('Verify error', { status: 400 }); }
+    evt = wh.verify(body, { 
+      "svix-id": svix_id, 
+      "svix-timestamp": svix_timestamp, 
+      "svix-signature": svix_signature 
+    });
+  } catch (err) { 
+    return new Response('Verify error', { status: 400 }); 
+  }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // ১. ইউজার আইডি রিকভারি
+  // ১. ইউজার এবং সাবস্ক্রিপশন আইডি রিকভারি
   const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
-  if (!userId) return new Response('No User ID', { status: 400 });
-
-  // 🛡️ SMART LOCK: তারিখটিকে ফিক্সড করে দিলাম (YYYY-MM-DD)
-  // যদি Clerk থেকে তারিখ না আসে, তবে আমরা আজকের তারিখ ব্যবহার করব
-  // এতে একই দিনে দুইবার ক্রেডিট অ্যাড হওয়া অসম্ভব হবে।
+  const subscriptionId = data.id || "manual"; 
   const rawDate = data.current_period_start || new Date().toISOString();
-  const currentPeriodLock = rawDate.split('T')[0]; // শুধু YYYY-MM-DD অংশটুকু নিবে
+  const currentPeriodDate = rawDate.split('T')[0];
 
-  // ২. পেইড প্ল্যান চেক
-  let isPaidPlan = false;
-  if (data.items && Array.isArray(data.items)) {
-    isPaidPlan = data.items.some(item => 
-      item.plan.amount > 0 && !item.plan.slug.toLowerCase().includes('free')
-    );
-  }
+  // ২. ইউনিক পিরিয়ড লক (Subscription ID + Date)
+  const uniqueLock = `${subscriptionId}-${currentPeriodDate}`;
 
+  if (!userId) return new Response('No User ID Found', { status: 400 });
+
+  // ৩. পেইড প্ল্যান এনালাইসিস
+  let activeItem = data.items?.find(item => 
+    item.plan.amount > 0 && !item.plan.slug.toLowerCase().includes('free')
+  );
+  
+  const isPaidPlan = !!activeItem;
+
+  // ৪. ইভেন্ট চেক
   if (eventType === 'subscription.created' || eventType === 'subscription.updated' || eventType === 'subscriptionItem.freeTrialEnding') {
     
-    // নির্দেশ অনুযায়ী: ফ্রি হলে কিছুই করবে না
-    if (!isPaidPlan) return new Response('No changes for free', { status: 200 });
+    // 🛑 তোমার স্পেসিফিক রিকোয়েস্ট: ফ্রি প্ল্যান হলে ডাটাবেসে কিছুই করার দরকার নেই
+    if (!isPaidPlan) {
+      console.log(`📉 Free Plan detected for ${userId}. Skipping DB update.`);
+      return new Response('Success: No changes made', { status: 200 });
+    }
 
+    // ✅ পেইড প্ল্যান (Student) হলে আপডেট হবে
     const userRef = doc(db, "users", userId);
 
     try {
       const userSnap = await getDoc(userRef);
       const userData = userSnap.exists() ? userSnap.data() : {};
 
-      // 🔥 এই চেকটিই ডুপ্লিকেট ক্রেডিট থামাবে
-      // যদি ডাটাবেসে আগের পিরিয়ড লক আর বর্তমান লক মিলে যায়, তবে ক্রেডিট অ্যাড হবে না।
-      if (userData.lastBillingPeriod === currentPeriodLock && userData.plan === "student") {
-        console.log(`🛑 Blocked Duplicate: Credit already added for ${currentPeriodLock}`);
-        return new Response('Already Credited for today/period', { status: 200 });
+      // ডুপ্লিকেট ক্রেডিট রোধ (ইউনিক লক দিয়ে)
+      if (userData.lastBillingPeriod === uniqueLock) {
+        console.log(`🛑 Blocked Duplicate: ${uniqueLock} already processed.`);
+        return new Response('Already Credited', { status: 200 });
       }
 
-      console.log(`🚀 Adding 2000 credits to user: ${userId}`);
+      console.log(`🚀 Adding 2000 credits to ${userId}`);
 
       await setDoc(userRef, {
         plan: "student",
         credit: increment(2000), 
-        lastBillingPeriod: currentPeriodLock, // লক সেভ হলো
+        lastBillingPeriod: uniqueLock, // এই ট্রানজেকশনটি লক করে দেওয়া হলো
         updatedAt: new Date().toISOString()
       }, { merge: true });
 
-      return new Response('Success: Credit Added', { status: 200 });
+      return new Response('Success: Credits Added', { status: 200 });
 
     } catch (error) {
-      console.error("❌ Firebase Write Error:", error);
+      console.error("❌ Firebase Error:", error);
       return new Response('Database Error', { status: 500 });
     }
   }
