@@ -42,17 +42,17 @@ export async function POST(req) {
   const userEmail = payer.email;
   const status = data.status;
 
-  // 🟢 FIX: সঠিক প্ল্যান সিলেকশন লজিক
+  // 🔎 স্মার্ট প্ল্যান ডিটেকশন লজিক
   let activeItem = null;
 
   if (data.items && data.items.length > 0) {
-      // পেইড প্ল্যান খোঁজা হচ্ছে (যার টাকা আছে এবং ফ্রি নয়)
+      // ১. পেইড এবং একটিভ প্ল্যান খোঁজা (যেটার স্ল্যাগে 'free' নেই)
       activeItem = data.items.find(item => 
           item.plan.amount > 0 && 
           !item.plan.slug.toLowerCase().includes('free')
       );
 
-      // যদি পেইড না পাই, তবেই ফ্রি বা ডিফল্টটা নিব
+      // ২. যদি পেইড না পাই, তাহলে ডিফল্টটা (ফ্রি) নিব
       if (!activeItem) {
           activeItem = data.items[0];
       }
@@ -62,8 +62,7 @@ export async function POST(req) {
   const planSlug = (activeItem?.plan?.slug || "").toLowerCase(); 
   const currentPeriodStart = data.current_period_start;
 
-  // কনসোলে চেক করো কি প্রিন্ট হচ্ছে
-  console.log(`🛡️ PLAN CHECK -> User: ${userId} | Found Amount: ${planAmount} | Slug: ${planSlug}`);
+  console.log(`🛡️ CHECK -> User: ${userId} | Plan: ${planSlug} | Amount: ${planAmount}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
@@ -71,13 +70,11 @@ export async function POST(req) {
         
         const userRef = doc(db, "users", userId);
 
-        // 🛑 CASE 1: ফ্রি প্ল্যান ডিটেকশন
-        // যদি টাকা ০ হয় অথবা স্লাগে 'free' থাকে
+        // 🛑 CASE 1: ফ্রি প্ল্যান অথবা ডাউনগ্রেড হ্যান্ডেলিং
         const isFreePlan = planAmount <= 0 || planSlug.includes('free');
 
         if (isFreePlan) {
-            console.log("📉 Downgrade/Free detected. Plan set to Free.");
-            
+            console.log("📉 User downgraded to Free.");
             await setDoc(userRef, {
                 plan: "free",
                 updatedAt: new Date().toISOString()
@@ -86,37 +83,39 @@ export async function POST(req) {
             return new Response('Plan Set to Free', { status: 200 });
         }
 
-        // ✅ CASE 2: পেইড/স্টুডেন্ট প্ল্যান
+        // ✅ CASE 2: স্টুডেন্ট প্ল্যান (ক্রেডিট এড লজিক)
         try {
             const userSnap = await getDoc(userRef);
+            const userData = userSnap.exists() ? userSnap.data() : {};
             
-            if (userSnap.exists()) {
-                const userData = userSnap.data();
-                
-                // ডুপ্লিকেট পেমেন্ট চেক (একই মাসে যেন দুইবার ক্রেডিট না পায়)
-                if (userData.lastBillingPeriod === currentPeriodStart) {
-                    console.log("🛑 Credit already given for this period.");
-                    // জাস্ট প্ল্যানটা ঠিক আছে কিনা নিশ্চিত করা
-                    await setDoc(userRef, { plan: "student" }, { merge: true });
-                    return new Response('Already Processed', { status: 200 });
-                }
+            // 🔥 লজিক ফিক্স: কখন ক্রেডিট এড করব?
+            // শর্ত ১: যদি ইউজার আগে 'student' না থাকে (মানে নতুন আপগ্রেড করছে)
+            // শর্ত ২: অথবা, যদি ইউজার 'student' থাকে কিন্তু এটা নতুন মাসের বিল (Renewal)
+            
+            const isNewUpgrade = userData.plan !== 'student';
+            const isRenewal = userData.lastBillingPeriod !== currentPeriodStart;
+
+            if (isNewUpgrade || isRenewal) {
+                console.log(`🚀 Adding 2000 Credits. Reason: ${isNewUpgrade ? 'New Upgrade' : 'Monthly Renewal'}`);
+
+                await setDoc(userRef, {
+                    plan: "student",
+                    credit: increment(2000), 
+                    totalCredit: 2000, // ম্যাক্স লিমিট রাখতে চাইলে রাখো, নাহলে বাদ দিতে পারো
+                    paymentEmail: userEmail,
+                    lastBillingPeriod: currentPeriodStart, // টোকেন আপডেট
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
+
+                return new Response('Credits Added Successfully', { status: 200 });
+            } else {
+                // যদি প্ল্যানও student হয় এবং বিলিং পিরিয়ডও সেম হয়
+                console.log("🛑 Duplicate Webhook Ignored (Credits already given).");
+                return new Response('Already Processed', { status: 200 });
             }
 
-            console.log(`🚀 Adding 2000 Credits for User: ${userId}`);
-
-            await setDoc(userRef, {
-                plan: "student",
-                credit: increment(2000), 
-                totalCredit: 2000, 
-                paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart,
-                updatedAt: new Date().toISOString()
-            }, { merge: true });
-            
-            return new Response('Credit Added Success', { status: 200 });
-
         } catch (error) {
-            console.error("❌ DB Error:", error);
+            console.error("❌ DB Update Error:", error);
             return new Response('Database Error', { status: 500 });
         }
     } 
