@@ -39,13 +39,11 @@ export async function POST(req) {
   const data = evt.data;
   const eventType = evt.type;
 
-  // ইউজার আইডি বের করা (নিরাপদ ভাবে)
+  // ইউজার আইডি
   const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
   
-  // 🛡️ FIX: ইমেইল এবং তারিখ যদি undefined থাকে, তবে নাল (null) বা স্ট্রিং ব্যবহার করব
+  // ফলব্যাক ভ্যালু (যাতে ক্র্যাশ না করে)
   const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email || "no-email";
-  
-  // 🔥 CRITICAL FIX: এখানে undefined আসছিল, তাই fallback দিচ্ছি
   const currentPeriodStart = data.current_period_start || new Date().toISOString();
 
   if (!userId) {
@@ -53,48 +51,65 @@ export async function POST(req) {
       return new Response('No User ID', { status: 400 });
   }
 
-  // ৩. প্ল্যান এবং পেমেন্ট চেক
+  // 🛡️ SMART PLAN CHECK (এটাই আসল ফিক্স)
+  // আমরা Paid Plan হিসেবে তাকেই ধরব যার:
+  // ১. দাম ০ এর বেশি
+  // ২. এবং প্ল্যানের নামের মধ্যে 'free' শব্দটি নেই
+  
   let isPaidPlan = false;
+  let detectedPlanName = "unknown";
+
   if (data.items && Array.isArray(data.items)) {
-      const activeItem = data.items.find(item => item.plan.amount > 0);
-      if (activeItem) isPaidPlan = true;
+      // আমরা খুঁজছি এমন কোনো আইটেম যেটা পেইড এবং ফ্রি নয়
+      const paidItem = data.items.find(item => 
+          item.plan.amount > 0 && 
+          !item.plan.slug.toLowerCase().includes('free')
+      );
+
+      if (paidItem) {
+          isPaidPlan = true;
+          detectedPlanName = paidItem.plan.slug;
+      }
   }
 
-  console.log(`Processing ${userId} | Paid: ${isPaidPlan} | Period: ${currentPeriodStart}`);
+  console.log(`Processing ${userId} | Paid: ${isPaidPlan} | Plan: ${detectedPlanName}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
       
       const userRef = doc(db, "users", userId);
 
       try {
-          // 🛑 CASE: FREE PLAN
+          // 🛑 CASE 1: FREE PLAN (যদি পেইড না হয়)
           if (!isPaidPlan) {
+              console.log("📉 Setting Plan to FREE (No Credit Added)");
+              
               await setDoc(userRef, {
                   plan: "free",
                   updatedAt: new Date().toISOString()
               }, { merge: true });
               
-              return new Response('Plan Free', { status: 200 });
+              return new Response('Plan Set to Free', { status: 200 });
           }
 
-          // ✅ CASE: PAID PLAN (STUDENT)
+          // ✅ CASE 2: PAID PLAN (STUDENT)
           if (isPaidPlan) {
-              // সরাসরি ডাটাবেস আপডেট (No undefined values allowed)
+              console.log("🚀 Upgrading to STUDENT & Adding Credits");
+
+              // এখানে আমরা সরাসরি ক্রেডিট বাড়াচ্ছি কারণ আগের DB Error টা সলভ হয়ে গেছে
               await setDoc(userRef, {
                   plan: "student",
                   credit: increment(2000), 
                   paymentEmail: userEmail,
-                  lastBillingPeriod: currentPeriodStart, // এখন এটা আর undefined হবে না
+                  lastBillingPeriod: currentPeriodStart,
                   updatedAt: new Date().toISOString()
               }, { merge: true });
 
-              console.log("✅ Success: Credit Added");
-              return new Response('Credit Added', { status: 200 });
+              console.log("✅ Credits Added Successfully");
+              return new Response('Credits Added', { status: 200 });
           }
 
       } catch (error) {
-          // এই লগটা এখন আসল কারণ দেখাবে যদি আবার সমস্যা হয়
-          console.error("❌ DB WRITE ERROR:", JSON.stringify(error, null, 2));
+          console.error("❌ DB ERROR:", JSON.stringify(error, null, 2));
           return new Response('DB Error', { status: 500 });
       }
   }
