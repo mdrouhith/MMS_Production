@@ -7,16 +7,18 @@ export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
   if (!WEBHOOK_SECRET) {
+    console.error("❌ WEBHOOK_SECRET Missing");
     return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
-  // ১. হেডার যাচাইকরণ
+  // Header Verification
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
   const svix_signature = headerPayload.get("svix-signature");
 
   if (!svix_id || !svix_timestamp || !svix_signature) {
+    console.error("❌ SVIX Headers Missing");
     return new Response('Error: Missing svix headers', { status: 400 });
   }
 
@@ -32,77 +34,90 @@ export async function POST(req) {
       "svix-signature": svix_signature,
     });
   } catch (err) {
+    console.error("❌ Verification Failed:", err);
     return new Response('Error verifying webhook', { status: 400 });
   }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // ২. ইউজার ইনফো
-  const payer = data.payer || {};
-  const userId = payer.user_id; 
-  const userEmail = payer.email;
-  const status = data.status;
-  const currentPeriodStart = data.current_period_start;
+  // 🔎 FIX: User ID ৩ জায়গায় খোঁজা হচ্ছে
+  // Clerk এর সাবস্ক্রিপশন আপডেটে সরাসরি data.user_id তে আইডি থাকে
+  const userId = data.user_id || data.payer?.user_id || data.customer_id;
+  const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email;
 
-  // ৩. প্ল্যান নির্ণয় (খুবই সাধারণ লজিক)
-  // আমরা দেখব items এর মধ্যে এমন কোনো প্ল্যান আছে কিনা যার দাম ০ এর বেশি
-  let isPaidPlan = false;
-  
-  if (data.items && data.items.length > 0) {
-      const paidItem = data.items.find(item => item.plan.amount > 0);
-      if (paidItem) {
-          isPaidPlan = true;
-      }
+  console.log(`🔍 WEBHOOK DETECTED: Type: ${eventType} | UserID: ${userId}`);
+
+  if (!userId) {
+      console.error("❌ NO USER ID FOUND IN WEBHOOK DATA");
+      return new Response('No User ID Found', { status: 400 });
   }
 
-  // ইভেন্ট ফিল্টারিং
+  // Plan Check Logic
+  let isPaidPlan = false;
+  let activeItem = null;
+
+  if (data.items && data.items.length > 0) {
+      activeItem = data.items.find(item => item.plan.amount > 0);
+      if (activeItem) isPaidPlan = true;
+  }
+
+  const currentPeriodStart = data.current_period_start;
+
+  // 🔥 MAIN LOGIC
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
-    if ((status === 'active' || status === 'succeeded') && userId) {
-        
-        const userRef = doc(db, "users", userId);
+    // Status চেক বাদ দিয়ে সরাসরি রান করছি ডিবাগিং এর জন্য (যদি active নাও হয় তাও লগ দেখব)
+    const userRef = doc(db, "users", userId);
 
-        // 🛑 CASE A: ফ্রি প্ল্যান (টাকা ০)
+    try {
+        // 🛑 CASE A: Free Plan
         if (!isPaidPlan) {
-            console.log(`📉 User: ${userId} switched to FREE.`);
+            console.log(`📉 Processing FREE Plan for ${userId}`);
             
-            // শুধু প্ল্যান আপডেট হবে, ক্রেডিট ফিক্সড থাকবে
             await setDoc(userRef, {
                 plan: "free",
                 updatedAt: new Date().toISOString()
             }, { merge: true });
 
+            console.log("✅ DB Updated: Set to FREE");
             return new Response('Plan set to Free', { status: 200 });
         }
 
-        // ✅ CASE B: স্টুডেন্ট প্ল্যান (টাকা > ০)
+        // ✅ CASE B: Paid Student Plan
         if (isPaidPlan) {
-            
-            // ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে দেওয়া হয়েছে কিনা
+            console.log(`🚀 Processing PAID Plan for ${userId}`);
+
             const userSnap = await getDoc(userRef);
+            
+            // ডুপ্লিকেট চেক (তবে লগ করে দেখব কি হচ্ছে)
             if (userSnap.exists()) {
                 const userData = userSnap.data();
                 if (userData.lastBillingPeriod === currentPeriodStart) {
-                    console.log("🛑 Already Processed for this month. Skipping credit.");
-                    return new Response('Duplicate Event Ignored', { status: 200 });
+                    console.log("⚠️ DUPLICATE: Credits already given for this period.");
+                    // Duplicate হলেও আমরা plan টা নিশ্চিত করি
+                    await setDoc(userRef, { plan: "student" }, { merge: true });
+                    return new Response('Duplicate Ignored', { status: 200 });
                 }
             }
 
-            console.log(`🚀 User: ${userId} upgraded to STUDENT. Adding 2000 credits.`);
-
-            // প্ল্যান আপডেট + ২০০০ ক্রেডিট যোগ + বিলিং ডেট সেভ
+            // Database Update
             await setDoc(userRef, {
                 plan: "student",
                 credit: increment(2000), 
-                paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart, // এই মাসের টোকেন
+                paymentEmail: userEmail || "no-email-found",
+                lastBillingPeriod: currentPeriodStart,
                 updatedAt: new Date().toISOString()
             }, { merge: true });
 
-            return new Response('Student Plan & Credits Added', { status: 200 });
+            console.log("✅ DB Updated: Credits Added (2000) & Plan Set to Student");
+            return new Response('Success: Credits Added', { status: 200 });
         }
-    } 
+
+    } catch (error) {
+        console.error("❌ FIREBASE WRITE ERROR:", error);
+        return new Response('Database Write Failed', { status: 500 });
+    }
   }
 
   return new Response('Webhook received', { status: 200 });
