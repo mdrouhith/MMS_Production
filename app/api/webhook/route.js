@@ -10,7 +10,7 @@ export async function POST(req) {
     return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
-  // Header Verification
+  // ১. হেডার যাচাই
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
@@ -35,65 +35,68 @@ export async function POST(req) {
     return new Response('Error verifying webhook', { status: 400 });
   }
 
+  // ২. ডাটা প্রসেসিং
   const data = evt.data;
   const eventType = evt.type;
 
-  // 1. User ID বের করা (সব জায়গা থেকে চেক করে)
-  const userId = data.user_id || data.payer?.user_id || data.customer_id;
-  const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email;
+  // ইউজার আইডি বের করা (নিরাপদ ভাবে)
+  const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
+  
+  // 🛡️ FIX: ইমেইল এবং তারিখ যদি undefined থাকে, তবে নাল (null) বা স্ট্রিং ব্যবহার করব
+  const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email || "no-email";
+  
+  // 🔥 CRITICAL FIX: এখানে undefined আসছিল, তাই fallback দিচ্ছি
+  const currentPeriodStart = data.current_period_start || new Date().toISOString();
 
   if (!userId) {
-      console.log("❌ No User ID found!");
+      console.log("❌ No User ID Found");
       return new Response('No User ID', { status: 400 });
   }
 
-  // 2. Paid Plan চেক করা
+  // ৩. প্ল্যান এবং পেমেন্ট চেক
   let isPaidPlan = false;
-  if (data.items && data.items.length > 0) {
+  if (data.items && Array.isArray(data.items)) {
       const activeItem = data.items.find(item => item.plan.amount > 0);
       if (activeItem) isPaidPlan = true;
   }
 
-  const currentPeriodStart = data.current_period_start;
+  console.log(`Processing ${userId} | Paid: ${isPaidPlan} | Period: ${currentPeriodStart}`);
 
-  // 🔥 MAIN OPERATION
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    
-    const userRef = doc(db, "users", userId);
+      
+      const userRef = doc(db, "users", userId);
 
-    // 🛑 FREE PLAN: যদি টাকা না থাকে
-    if (!isPaidPlan) {
-        console.log(`📉 Plan set to FREE for ${userId}`);
-        await setDoc(userRef, {
-            plan: "free",
-            updatedAt: new Date().toISOString()
-        }, { merge: true });
-        
-        return new Response('Plan Free', { status: 200 });
-    }
+      try {
+          // 🛑 CASE: FREE PLAN
+          if (!isPaidPlan) {
+              await setDoc(userRef, {
+                  plan: "free",
+                  updatedAt: new Date().toISOString()
+              }, { merge: true });
+              
+              return new Response('Plan Free', { status: 200 });
+          }
 
-    // ✅ PAID PLAN: সরাসরি ক্রেডিট আপডেট (No Duplicate Check)
-    if (isPaidPlan) {
-        console.log(`🚀 FORCE ADDING CREDITS for ${userId}`);
+          // ✅ CASE: PAID PLAN (STUDENT)
+          if (isPaidPlan) {
+              // সরাসরি ডাটাবেস আপডেট (No undefined values allowed)
+              await setDoc(userRef, {
+                  plan: "student",
+                  credit: increment(2000), 
+                  paymentEmail: userEmail,
+                  lastBillingPeriod: currentPeriodStart, // এখন এটা আর undefined হবে না
+                  updatedAt: new Date().toISOString()
+              }, { merge: true });
 
-        try {
-            // আমি intentionaly 'lastBillingPeriod' চেক বাদ দিয়েছি যাতে টেস্টে কাজ করে
-            await setDoc(userRef, {
-                plan: "student",
-                credit: increment(2000), // এখুনি ২০০০ বাড়বে
-                paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart,
-                updatedAt: new Date().toISOString()
-            }, { merge: true });
+              console.log("✅ Success: Credit Added");
+              return new Response('Credit Added', { status: 200 });
+          }
 
-            console.log("✅ Success: Plan Student & Credit +2000");
-            return new Response('Credit Added', { status: 200 });
-            
-        } catch (error) {
-            console.error("❌ DB Error:", error);
-            return new Response('DB Error', { status: 500 });
-        }
-    }
+      } catch (error) {
+          // এই লগটা এখন আসল কারণ দেখাবে যদি আবার সমস্যা হয়
+          console.error("❌ DB WRITE ERROR:", JSON.stringify(error, null, 2));
+          return new Response('DB Error', { status: 500 });
+      }
   }
 
   return new Response('Webhook received', { status: 200 });
