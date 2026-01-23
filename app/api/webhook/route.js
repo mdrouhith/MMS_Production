@@ -10,6 +10,7 @@ export async function POST(req) {
     return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
   }
 
+  // ১. হেডার যাচাইকরণ
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
@@ -37,86 +38,69 @@ export async function POST(req) {
   const data = evt.data;
   const eventType = evt.type;
 
+  // ২. ইউজার ইনফো
   const payer = data.payer || {};
   const userId = payer.user_id; 
   const userEmail = payer.email;
   const status = data.status;
+  const currentPeriodStart = data.current_period_start;
 
-  // 🔎 স্মার্ট প্ল্যান ডিটেকশন লজিক
-  let activeItem = null;
-
+  // ৩. প্ল্যান নির্ণয় (খুবই সাধারণ লজিক)
+  // আমরা দেখব items এর মধ্যে এমন কোনো প্ল্যান আছে কিনা যার দাম ০ এর বেশি
+  let isPaidPlan = false;
+  
   if (data.items && data.items.length > 0) {
-      // ১. পেইড এবং একটিভ প্ল্যান খোঁজা (যেটার স্ল্যাগে 'free' নেই)
-      activeItem = data.items.find(item => 
-          item.plan.amount > 0 && 
-          !item.plan.slug.toLowerCase().includes('free')
-      );
-
-      // ২. যদি পেইড না পাই, তাহলে ডিফল্টটা (ফ্রি) নিব
-      if (!activeItem) {
-          activeItem = data.items[0];
+      const paidItem = data.items.find(item => item.plan.amount > 0);
+      if (paidItem) {
+          isPaidPlan = true;
       }
   }
 
-  const planAmount = activeItem?.plan?.amount || 0;
-  const planSlug = (activeItem?.plan?.slug || "").toLowerCase(); 
-  const currentPeriodStart = data.current_period_start;
-
-  console.log(`🛡️ CHECK -> User: ${userId} | Plan: ${planSlug} | Amount: ${planAmount}`);
-
+  // ইভেন্ট ফিল্টারিং
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
     if ((status === 'active' || status === 'succeeded') && userId) {
         
         const userRef = doc(db, "users", userId);
 
-        // 🛑 CASE 1: ফ্রি প্ল্যান অথবা ডাউনগ্রেড হ্যান্ডেলিং
-        const isFreePlan = planAmount <= 0 || planSlug.includes('free');
-
-        if (isFreePlan) {
-            console.log("📉 User downgraded to Free.");
+        // 🛑 CASE A: ফ্রি প্ল্যান (টাকা ০)
+        if (!isPaidPlan) {
+            console.log(`📉 User: ${userId} switched to FREE.`);
+            
+            // শুধু প্ল্যান আপডেট হবে, ক্রেডিট ফিক্সড থাকবে
             await setDoc(userRef, {
                 plan: "free",
                 updatedAt: new Date().toISOString()
             }, { merge: true });
 
-            return new Response('Plan Set to Free', { status: 200 });
+            return new Response('Plan set to Free', { status: 200 });
         }
 
-        // ✅ CASE 2: স্টুডেন্ট প্ল্যান (ক্রেডিট এড লজিক)
-        try {
+        // ✅ CASE B: স্টুডেন্ট প্ল্যান (টাকা > ০)
+        if (isPaidPlan) {
+            
+            // ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে দেওয়া হয়েছে কিনা
             const userSnap = await getDoc(userRef);
-            const userData = userSnap.exists() ? userSnap.data() : {};
-            
-            // 🔥 লজিক ফিক্স: কখন ক্রেডিট এড করব?
-            // শর্ত ১: যদি ইউজার আগে 'student' না থাকে (মানে নতুন আপগ্রেড করছে)
-            // শর্ত ২: অথবা, যদি ইউজার 'student' থাকে কিন্তু এটা নতুন মাসের বিল (Renewal)
-            
-            const isNewUpgrade = userData.plan !== 'student';
-            const isRenewal = userData.lastBillingPeriod !== currentPeriodStart;
-
-            if (isNewUpgrade || isRenewal) {
-                console.log(`🚀 Adding 2000 Credits. Reason: ${isNewUpgrade ? 'New Upgrade' : 'Monthly Renewal'}`);
-
-                await setDoc(userRef, {
-                    plan: "student",
-                    credit: increment(2000), 
-                    totalCredit: 2000, // ম্যাক্স লিমিট রাখতে চাইলে রাখো, নাহলে বাদ দিতে পারো
-                    paymentEmail: userEmail,
-                    lastBillingPeriod: currentPeriodStart, // টোকেন আপডেট
-                    updatedAt: new Date().toISOString()
-                }, { merge: true });
-
-                return new Response('Credits Added Successfully', { status: 200 });
-            } else {
-                // যদি প্ল্যানও student হয় এবং বিলিং পিরিয়ডও সেম হয়
-                console.log("🛑 Duplicate Webhook Ignored (Credits already given).");
-                return new Response('Already Processed', { status: 200 });
+            if (userSnap.exists()) {
+                const userData = userSnap.data();
+                if (userData.lastBillingPeriod === currentPeriodStart) {
+                    console.log("🛑 Already Processed for this month. Skipping credit.");
+                    return new Response('Duplicate Event Ignored', { status: 200 });
+                }
             }
 
-        } catch (error) {
-            console.error("❌ DB Update Error:", error);
-            return new Response('Database Error', { status: 500 });
+            console.log(`🚀 User: ${userId} upgraded to STUDENT. Adding 2000 credits.`);
+
+            // প্ল্যান আপডেট + ২০০০ ক্রেডিট যোগ + বিলিং ডেট সেভ
+            await setDoc(userRef, {
+                plan: "student",
+                credit: increment(2000), 
+                paymentEmail: userEmail,
+                lastBillingPeriod: currentPeriodStart, // এই মাসের টোকেন
+                updatedAt: new Date().toISOString()
+            }, { merge: true });
+
+            return new Response('Student Plan & Credits Added', { status: 200 });
         }
     } 
   }
