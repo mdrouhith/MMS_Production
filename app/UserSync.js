@@ -10,28 +10,25 @@ export default function UserSync() {
   useEffect(() => {
     const syncUser = async () => {
       if (user) {
-        // ✅ আসল সমাধান: আমরা Clerk-এর ID (user.id) ব্যবহার করছি
-        // ফলে route.js এবং frontend এখন একই ID ব্যবহার করবে।
-        const userRef = doc(db, "users", user.id);
+        // Webhook এর সাথে ID মিল রাখার জন্য user.id ব্যবহার
+        const userRef = doc(db, "users", user.id); 
         const userSnap = await getDoc(userRef);
 
-        // যদি ইউজার ডাটাবেসে না থাকে, তবেই নতুন করে তৈরি হবে
         if (!userSnap.exists()) {
+          // ইউজার না থাকলে একদম নতুন হিসেবে তৈরি হবে
           await setDoc(userRef, {
             name: user.fullName,
             email: user.primaryEmailAddress?.emailAddress,
-            credit: 10, // শুরুতে ১০ ক্রেডিট
+            credit: 10,
             plan: "free",
-            createdAt: new Date(),
-            lastResetDate: new Date().toISOString().split('T')[0]
+            createdAt: new Date().toISOString(),
           });
-          console.log("User Synced to DB ✅");
+          console.log("New User Synced ✅");
         }
       }
     };
-
     syncUser();
   }, [user]);
 
-  return null; // এটি স্ক্রিনে কিছু দেখাবে না, শুধু ব্যাকগ্রাউন্ডে কাজ করবে
+  return null;
 }
