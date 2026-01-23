@@ -37,30 +37,33 @@ export async function POST(req) {
   const data = evt.data;
   const eventType = evt.type;
 
-  // ১. ইউজার সনাক্তকরণ
   const payer = data.payer || {};
   const userId = payer.user_id; 
   const userEmail = payer.email;
   const status = data.status;
 
-  // 🟢 FIX 1: Item খোঁজার লজিক আপডেট
-  // আমরা জোর করে amount > 0 খুঁজব না, কারণ এতে Downgrade এর সময় পুরনো প্ল্যান সিলেক্ট হতে পারে।
-  // সাধারণত data.items[0] ই মেইন প্ল্যান থাকে।
-  
+  // 🟢 FIX: সঠিক প্ল্যান সিলেকশন লজিক
   let activeItem = null;
+
   if (data.items && data.items.length > 0) {
-      // আমরা প্রথমে দেখব এমন কোন আইটেম আছে কি না যা 'Active'
-      // যদি আইটেম স্পেসিফিক স্ট্যাটাস না থাকে, তবে প্রথম আইটেমটি নেওয়াই নিরাপদ
-      activeItem = data.items[0]; 
+      // পেইড প্ল্যান খোঁজা হচ্ছে (যার টাকা আছে এবং ফ্রি নয়)
+      activeItem = data.items.find(item => 
+          item.plan.amount > 0 && 
+          !item.plan.slug.toLowerCase().includes('free')
+      );
+
+      // যদি পেইড না পাই, তবেই ফ্রি বা ডিফল্টটা নিব
+      if (!activeItem) {
+          activeItem = data.items[0];
+      }
   }
 
-  // সঠিক অ্যামাউন্ট এবং স্লাগ বের করা
   const planAmount = activeItem?.plan?.amount || 0;
-  // প্ল্যানের নাম বা স্লাগ ছোট হাতের অক্ষরে কনভার্ট করে নিলাম চেকিংয়ের সুবিধার জন্য
   const planSlug = (activeItem?.plan?.slug || "").toLowerCase(); 
   const currentPeriodStart = data.current_period_start;
 
-  console.log(`🛡️ SMART CHECK -> User: ${userId} | Amount: ${planAmount} | Slug: ${planSlug}`);
+  // কনসোলে চেক করো কি প্রিন্ট হচ্ছে
+  console.log(`🛡️ PLAN CHECK -> User: ${userId} | Found Amount: ${planAmount} | Slug: ${planSlug}`);
 
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
     
@@ -68,56 +71,52 @@ export async function POST(req) {
         
         const userRef = doc(db, "users", userId);
 
-        // 🛑 CASE 1: ফ্রি প্ল্যান বা ডাউনগ্রেড হ্যান্ডেলিং
-        // লজিক: যদি টাকার পরিমাণ ০ হয় অথবা প্ল্যানের নামের মধ্যে 'free' লেখা থাকে।
+        // 🛑 CASE 1: ফ্রি প্ল্যান ডিটেকশন
+        // যদি টাকা ০ হয় অথবা স্লাগে 'free' থাকে
         const isFreePlan = planAmount <= 0 || planSlug.includes('free');
 
         if (isFreePlan) {
-            console.log("📉 Free/Downgrade detected. Setting plan to Free.");
+            console.log("📉 Downgrade/Free detected. Plan set to Free.");
             
             await setDoc(userRef, {
                 plan: "free",
                 updatedAt: new Date().toISOString()
-                // নোটিশ: এখানে credit ফিল্ড নেই, তাই ক্রেডিট বাড়বে না।
             }, { merge: true });
 
-            return new Response('Plan Set to Free (No Credit Added)', { status: 200 });
+            return new Response('Plan Set to Free', { status: 200 });
         }
 
-        // ✅ CASE 2: স্টুডেন্ট প্ল্যান (টাকা > ০ এবং ফ্রি নয়)
+        // ✅ CASE 2: পেইড/স্টুডেন্ট প্ল্যান
         try {
             const userSnap = await getDoc(userRef);
             
             if (userSnap.exists()) {
                 const userData = userSnap.data();
                 
-                // 🟢 ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে পেয়েছে কি না
+                // ডুপ্লিকেট পেমেন্ট চেক (একই মাসে যেন দুইবার ক্রেডিট না পায়)
                 if (userData.lastBillingPeriod === currentPeriodStart) {
-                    console.log("🛑 Credit already given for this month. Skipping.");
-                    
-                    // আনলক নিশ্চিত করছি (যদি মিস হয়ে থাকে)
+                    console.log("🛑 Credit already given for this period.");
+                    // জাস্ট প্ল্যানটা ঠিক আছে কিনা নিশ্চিত করা
                     await setDoc(userRef, { plan: "student" }, { merge: true });
-                    
                     return new Response('Already Processed', { status: 200 });
                 }
             }
 
-            console.log(`🚀 Valid Payment! Adding 2000 Credits.`);
+            console.log(`🚀 Adding 2000 Credits for User: ${userId}`);
 
-            // সব ফিল্টার পাস করলে আপডেট হবে
             await setDoc(userRef, {
                 plan: "student",
                 credit: increment(2000), 
-                totalCredit: 2000, // এটি যদি ম্যাক্স লিমিট হয় তবে ঠিক আছে
+                totalCredit: 2000, 
                 paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart, // ✅ এই মাসের টোকেন সেভ
+                lastBillingPeriod: currentPeriodStart,
                 updatedAt: new Date().toISOString()
             }, { merge: true });
             
-            console.log(`✅ SUCCESS: Credits Added.`);
+            return new Response('Credit Added Success', { status: 200 });
 
         } catch (error) {
-            console.error("❌ DB Update Failed:", error);
+            console.error("❌ DB Error:", error);
             return new Response('Database Error', { status: 500 });
         }
     } 
