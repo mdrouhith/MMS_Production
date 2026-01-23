@@ -2,10 +2,10 @@
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarHeader } from "@/components/ui/sidebar";
-import { Sun, Moon, Zap, Plus, Trash2 } from "lucide-react"; 
+import { Sun, Moon, Zap, Plus, Trash2, Wallet } from "lucide-react"; 
 import { Button } from "@/components/ui/button";
 import { useTheme } from "next-themes";
-import { SignInButton, useUser, UserButton, PricingTable } from "@clerk/nextjs"; 
+import { SignInButton, useUser, UserButton } from "@clerk/nextjs"; 
 import UsageCreditProgress from "./UsageCreditProgress";
 import { db } from "@/config/FirebaseConfig";
 import { doc, onSnapshot } from "firebase/firestore";
@@ -17,6 +17,7 @@ import { PricingModal } from "./PricingModal.jsx";
 // 🛠️ প্ল্যান লিমিট কনফিগারেশন
 const PLAN_LIMITS = {
   "free": 5,
+  "student": 2000,
   "starter": 1000,
   "creator": 4000,
   "business": 10000
@@ -68,7 +69,7 @@ export function AppSidebar() {
               <h2 className="font-bold text-xl tracking-tight">Mirhas Studio</h2>
             </div>
             
-            {/* 🔥 Theme Toggle Fix: মাউন্টেড না হওয়া পর্যন্ত রেন্ডার হবে না */}
+            {/* 🔥 Theme Toggle Fix */}
             <div>
                 {mounted && (
                   theme === "light" ? (
@@ -101,7 +102,7 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
-        <div className="p-3 mb-2 space-y-4">
+        <div className="p-3 mb-2 space-y-3">
           {!user ? (
              <SignInButton><Button className="w-full bg-primary" size="lg">Sign In / Sign Up</Button></SignInButton>
           ) : (
@@ -112,16 +113,40 @@ export function AppSidebar() {
                   planName={userPlan === 'free' && credits > 50 ? "Starter Gift" : userPlan} 
               />
               
-            <PricingModal>
+              <PricingModal>
                 <Button className="w-full border border-amber-500/30 text-amber-600 hover:bg-amber-50" size="lg" variant="outline">
                     <Zap className="w-4 h-4 mr-2 text-amber-600" /> Upgrade Plan
                 </Button>
-            </PricingModal>
+              </PricingModal>
+
+              {/* 🔥 Fancy bKash Button Added Here */}
+              <Button 
+    // হাইট h-16 থেকে বাড়িয়ে h-20 করা হয়েছে যাতে লোগোটা বড় দেখানোর জায়গা পায়
+    className="w-full bg-white dark:bg-white/95 hover:bg-gray-50 text-[#E2136E] shadow-md shadow-[#E2136E]/10 hover:shadow-lg hover:shadow-[#E2136E]/20 border border-[#E2136E]/20 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98] h-20 rounded-xl relative overflow-hidden group py-2" 
+    size="lg"
+    onClick={() => console.log("bKash Payment Initialized")}
+>
+    <div className="flex flex-col items-center justify-center w-full">
+        {/* Helper Text - একটু গ্যাপ বাড়ানো হয়েছে (mb-1) */}
+        <span className="text-[10px] text-gray-500 dark:text-gray-400 font-medium uppercase tracking-wider mb-1 leading-none">Secure Pay with</span>
+        
+        {/* 🔥 Big Prominent bKash Logo - সাইজ অনেক বাড়ানো হয়েছে */}
+        <div className="relative w-40 h-12 transition-transform duration-300 group-hover:scale-105">
+            <Image 
+                src="/bKash.svg" 
+                alt="bKash Logo" 
+                fill
+                className="object-contain drop-shadow-sm" // হালকা শ্যাডো দেওয়া হয়েছে যাতে লোগোটা ভেসে থাকে
+                priority
+            />
+        </div>
+    </div>
+</Button>
               
               {chatId && (
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button className="w-full flex justify-start items-center gap-3 text-red-500" variant="ghost">
+                    <Button className="w-full flex justify-start items-center gap-3 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20" variant="ghost">
                         <Trash2 className="w-4 h-4" /> <span className="font-medium">Delete Current Chat</span>
                     </Button>
                   </AlertDialogTrigger>
