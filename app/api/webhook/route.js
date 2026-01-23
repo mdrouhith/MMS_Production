@@ -7,9 +7,10 @@ export async function POST(req) {
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
   if (!WEBHOOK_SECRET) {
-    return new Response('Error: WEBHOOK_SECRET is missing', { status: 500 });
+    return new Response('Error: WEBHOOK_SECRET missing', { status: 500 });
   }
 
+  // ১. হেডার ভেরিফিকেশন (Svix Security)
   const headerPayload = await headers();
   const svix_id = headerPayload.get("svix-id");
   const svix_timestamp = headerPayload.get("svix-timestamp");
@@ -31,96 +32,76 @@ export async function POST(req) {
       "svix-signature": svix_signature,
     });
   } catch (err) {
-    return new Response('Error verifying webhook', { status: 400 });
+    return new Response('Error: Webhook verification failed', { status: 400 });
   }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // ১. ইউজার সনাক্তকরণ
-  const payer = data.payer || {};
-  const userId = payer.user_id; 
-  const userEmail = payer.email;
-  const status = data.status;
+  // ২. ইউজার এবং বিলিং পিরিয়ড বের করা (Safe fallback সহ)
+  const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
+  const userEmail = data.email_addresses?.[0]?.email_address || data.payer?.email || "no-email";
+  const currentPeriodStart = data.current_period_start || new Date().toISOString();
 
-  // 🟢 FIX 1: Item খোঁজার লজিক আপডেট
-  // আমরা জোর করে amount > 0 খুঁজব না, কারণ এতে Downgrade এর সময় পুরনো প্ল্যান সিলেক্ট হতে পারে।
-  // সাধারণত data.items[0] ই মেইন প্ল্যান থাকে।
-  
-  let activeItem = null;
-  if (data.items && data.items.length > 0) {
-      // আমরা প্রথমে দেখব এমন কোন আইটেম আছে কি না যা 'Active'
-      // যদি আইটেম স্পেসিফিক স্ট্যাটাস না থাকে, তবে প্রথম আইটেমটি নেওয়াই নিরাপদ
-      activeItem = data.items[0]; 
+  if (!userId) {
+    return new Response('Error: User ID not found', { status: 400 });
   }
 
-  // সঠিক অ্যামাউন্ট এবং স্লাগ বের করা
-  const planAmount = activeItem?.plan?.amount || 0;
-  // প্ল্যানের নাম বা স্লাগ ছোট হাতের অক্ষরে কনভার্ট করে নিলাম চেকিংয়ের সুবিধার জন্য
-  const planSlug = (activeItem?.plan?.slug || "").toLowerCase(); 
-  const currentPeriodStart = data.current_period_start;
+  // ৩. স্মার্ট প্ল্যান ডিটেকশন (Paid vs Free)
+  let isPaidPlan = false;
+  if (data.items && Array.isArray(data.items)) {
+    // এমন আইটেম খুঁজবে যার দাম ০ এর বেশি এবং নামের মধ্যে 'free' নেই
+    const paidItem = data.items.find(item => 
+      item.plan.amount > 0 && 
+      !item.plan.slug.toLowerCase().includes('free')
+    );
+    if (paidItem) isPaidPlan = true;
+  }
 
-  console.log(`🛡️ SMART CHECK -> User: ${userId} | Amount: ${planAmount} | Slug: ${planSlug}`);
-
+  // ৪. মেইন অপারেশন (subscription created/updated)
   if (eventType === 'subscription.created' || eventType === 'subscription.updated') {
-    
-    if ((status === 'active' || status === 'succeeded') && userId) {
-        
-        const userRef = doc(db, "users", userId);
+    const userRef = doc(db, "users", userId);
 
-        // 🛑 CASE 1: ফ্রি প্ল্যান বা ডাউনগ্রেড হ্যান্ডেলিং
-        // লজিক: যদি টাকার পরিমাণ ০ হয় অথবা প্ল্যানের নামের মধ্যে 'free' লেখা থাকে।
-        const isFreePlan = planAmount <= 0 || planSlug.includes('free');
+    try {
+      // 🛑 CASE A: User Free-তে সুইচ করলে (No Credit Added)
+      if (!isPaidPlan) {
+        console.log(`📉 Downgrade detected for ${userId}. Setting plan to FREE.`);
+        await setDoc(userRef, {
+          plan: "free",
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
 
-        if (isFreePlan) {
-            console.log("📉 Free/Downgrade detected. Setting plan to Free.");
-            
-            await setDoc(userRef, {
-                plan: "free",
-                updatedAt: new Date().toISOString()
-                // নোটিশ: এখানে credit ফিল্ড নেই, তাই ক্রেডিট বাড়বে না।
-            }, { merge: true });
+        return new Response('Success: Plan set to Free', { status: 200 });
+      }
 
-            return new Response('Plan Set to Free (No Credit Added)', { status: 200 });
+      // ✅ CASE B: User Paid/Student Plan-এ আসলে (Credit Added)
+      if (isPaidPlan) {
+        const userSnap = await getDoc(userRef);
+        const userData = userSnap.exists() ? userSnap.data() : {};
+
+        // ডুপ্লিকেট ক্রেডিট রোধ করার জন্য পিরিয়ড চেক
+        // যদি অলরেডি স্টুডেন্ট থাকে এবং বিলিং পিরিয়ড এক হয়, তবে ক্রেডিট দেবে না
+        if (userData.lastBillingPeriod === currentPeriodStart && userData.plan === "student") {
+          console.log(`🛑 Credit already added for this period for ${userId}`);
+          return new Response('Success: Already Credited', { status: 200 });
         }
 
-        // ✅ CASE 2: স্টুডেন্ট প্ল্যান (টাকা > ০ এবং ফ্রি নয়)
-        try {
-            const userSnap = await getDoc(userRef);
-            
-            if (userSnap.exists()) {
-                const userData = userSnap.data();
-                
-                // 🟢 ডুপ্লিকেট চেক: এই মাসের ক্রেডিট আগে পেয়েছে কি না
-                if (userData.lastBillingPeriod === currentPeriodStart) {
-                    console.log("🛑 Credit already given for this month. Skipping.");
-                    
-                    // আনলক নিশ্চিত করছি (যদি মিস হয়ে থাকে)
-                    await setDoc(userRef, { plan: "student" }, { merge: true });
-                    
-                    return new Response('Already Processed', { status: 200 });
-                }
-            }
+        console.log(`🚀 Upgrading ${userId} to STUDENT and adding 2000 credits.`);
+        await setDoc(userRef, {
+          plan: "student",
+          credit: increment(2000), // সরাসরি ২০০০ যোগ হবে
+          paymentEmail: userEmail,
+          lastBillingPeriod: currentPeriodStart, // এই মাসের টোকেন সেভ
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
 
-            console.log(`🚀 Valid Payment! Adding 2000 Credits.`);
+        return new Response('Success: Credits Added', { status: 200 });
+      }
 
-            // সব ফিল্টার পাস করলে আপডেট হবে
-            await setDoc(userRef, {
-                plan: "student",
-                credit: increment(2000), 
-                totalCredit: 2000, // এটি যদি ম্যাক্স লিমিট হয় তবে ঠিক আছে
-                paymentEmail: userEmail,
-                lastBillingPeriod: currentPeriodStart, // ✅ এই মাসের টোকেন সেভ
-                updatedAt: new Date().toISOString()
-            }, { merge: true });
-            
-            console.log(`✅ SUCCESS: Credits Added.`);
-
-        } catch (error) {
-            console.error("❌ DB Update Failed:", error);
-            return new Response('Database Error', { status: 500 });
-        }
-    } 
+    } catch (error) {
+      console.error("❌ Firebase Write Error:", error);
+      return new Response('Database Error', { status: 500 });
+    }
   }
 
   return new Response('Webhook received', { status: 200 });
