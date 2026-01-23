@@ -20,74 +20,72 @@ export async function POST(req) {
   let evt;
 
   try {
-    evt = wh.verify(body, { 
-      "svix-id": svix_id, 
-      "svix-timestamp": svix_timestamp, 
-      "svix-signature": svix_signature 
-    });
-  } catch (err) { 
-    return new Response('Verify error', { status: 400 }); 
-  }
+    evt = wh.verify(body, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
+  } catch (err) { return new Response('Verify error', { status: 400 }); }
 
   const data = evt.data;
   const eventType = evt.type;
 
-  // ১. ইউজার এবং সাবস্ক্রিপশন আইডি রিকভারি
+  // ১. ইউজার এবং সাবস্ক্রিপশন আইডি বের করা
   const userId = data.user_id || data.payer?.user_id || payload?.data?.user_id;
-  const subscriptionId = data.id || "manual"; 
-  const rawDate = data.current_period_start || new Date().toISOString();
+  
+  // 🔥 ফিক্স: Clerk এর পাঠানো মেইন ID টাই হচ্ছে সাবস্ক্রিপশন আইডি
+  const subscriptionId = data.id || "manual_id"; 
+  
+  // তারিখ ফরম্যাট: YYYY-MM-DD
+  const rawDate = data.current_period_start ? new Date(data.current_period_start * 1000).toISOString() : new Date().toISOString();
   const currentPeriodDate = rawDate.split('T')[0];
 
-  // ২. ইউনিক পিরিয়ড লক (Subscription ID + Date)
+  // ২. ইউনিক লক (ID + Date)
+  // যদি ইউজার ডিলিট করে আবার কিনে, তবে ID বদলে যাবে। ১ মাস পর রিনিউ হলে Date বদলে যাবে।
   const uniqueLock = `${subscriptionId}-${currentPeriodDate}`;
 
   if (!userId) return new Response('No User ID Found', { status: 400 });
 
-  // ৩. পেইড প্ল্যান এনালাইসিস
+  // ৩. পেইড প্ল্যান চেক
   let activeItem = data.items?.find(item => 
     item.plan.amount > 0 && !item.plan.slug.toLowerCase().includes('free')
   );
-  
   const isPaidPlan = !!activeItem;
 
-  // ৪. ইভেন্ট চেক
   if (eventType === 'subscription.created' || eventType === 'subscription.updated' || eventType === 'subscriptionItem.freeTrialEnding') {
     
-    // 🛑 তোমার স্পেসিফিক রিকোয়েস্ট: ফ্রি প্ল্যান হলে ডাটাবেসে কিছুই করার দরকার নেই
+    // ফ্রি হলে ডাটাবেসে হাত দিবে না
     if (!isPaidPlan) {
-      console.log(`📉 Free Plan detected for ${userId}. Skipping DB update.`);
-      return new Response('Success: No changes made', { status: 200 });
+      console.log(`📉 Free plan/Downgrade for ${userId}. No changes.`);
+      return new Response('OK', { status: 200 });
     }
 
-    // ✅ পেইড প্ল্যান (Student) হলে আপডেট হবে
     const userRef = doc(db, "users", userId);
 
     try {
       const userSnap = await getDoc(userRef);
       const userData = userSnap.exists() ? userSnap.data() : {};
 
-      // ডুপ্লিকেট ক্রেডিট রোধ (ইউনিক লক দিয়ে)
+      // 🛡️ ডুপ্লিকেট লক চেক
+      // যদি আইডি অথবা তারিখ—যেকোনো একটা বদলায়, তবেই ক্রেডিট অ্যাড হবে।
       if (userData.lastBillingPeriod === uniqueLock) {
-        console.log(`🛑 Blocked Duplicate: ${uniqueLock} already processed.`);
+        console.log(`🛑 Duplicate Blocked for ${uniqueLock}`);
         return new Response('Already Credited', { status: 200 });
       }
 
-      console.log(`🚀 Adding 2000 credits to ${userId}`);
+      console.log(`🚀 Processing Success: Adding 2000 credits to ${userId}`);
 
       await setDoc(userRef, {
         plan: "student",
         credit: increment(2000), 
-        lastBillingPeriod: uniqueLock, // এই ট্রানজেকশনটি লক করে দেওয়া হলো
-        updatedAt: new Date().toISOString()
+        lastBillingPeriod: uniqueLock, // লক সেভ হচ্ছে
+        updatedAt: new Date().toISOString(),
+        paymentEmail: data.email_addresses?.[0]?.email_address || data.payer?.email || "paid-user"
       }, { merge: true });
 
-      return new Response('Success: Credits Added', { status: 200 });
+      return new Response('Success', { status: 200 });
 
     } catch (error) {
-      console.error("❌ Firebase Error:", error);
-      return new Response('Database Error', { status: 500 });
+      console.error("❌ DB Error:", error);
+      return new Response('Error', { status: 500 });
     }
   }
 
-  return new Response('Webhook received', { status: 200 });
+  return new Response('OK', { status: 200 });
 }
