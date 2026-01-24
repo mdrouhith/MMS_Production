@@ -1,10 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Zap, TrendingDown, AlertCircle, Crown } from 'lucide-react';
 
-function UsageCreditProgress({ remaining = 0, total = 5, planName = "Free Tier", resetAt = null }) {
+function UsageCreditProgress({ remaining = 0, total = 10, planName = "Free Tier", resetAt = null }) {
   
   const [timeLeft, setTimeLeft] = useState(null);
-  const percentage = total > 0 ? Math.min(100, Math.max(0, (remaining / total) * 100)) : 0;
+
+  // 🔥 ডাইনামিক টোটাল লজিক: 
+  // যদি ইউজারের কেনা ক্রেডিট (remaining) টোটাল লিমিটের চেয়ে বেশি হয়, 
+  // তবে আমরা remaining কেই টোটাল হিসেবে ধরবো যাতে বারটি ফুল (১০০%) দেখায়।
+  const displayTotal = remaining > total ? remaining : total;
+  const percentage = displayTotal > 0 ? Math.min(100, Math.max(0, (remaining / displayTotal) * 100)) : 0;
   
   const isLow = percentage < 20; 
   const isMedium = percentage >= 20 && percentage < 50; 
@@ -75,11 +80,11 @@ function UsageCreditProgress({ remaining = 0, total = 5, planName = "Free Tier",
         <div className='flex items-end justify-between mb-3'>
           <div className="flex flex-col">
               <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                 Available Credits {isLow && <AlertCircle className="w-3 h-3 text-red-500" />}
+                  Available Credits {isLow && <AlertCircle className="w-3 h-3 text-red-500" />}
               </span>
               <div className="flex items-baseline gap-1">
                  <span className={`text-4xl font-black tracking-tighter tabular-nums ${textColor}`}>{formatNumber(remaining)}</span>
-                 <span className='text-sm text-muted-foreground/60 font-medium mb-1'>/ {formatNumber(total)}</span>
+                 <span className='text-sm text-muted-foreground/60 font-medium mb-1'>/ {formatNumber(displayTotal)}</span>
               </div>
           </div>
           <div className="text-right">
