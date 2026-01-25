@@ -16,14 +16,14 @@ const content = {
   en: {
     nav: { features: "Features", pricing: "Plans", faq: "FAQs", login: "Sign In", langBtn: "EN" },
     hero: {
-      badge: "Mirha Studio v2.0 • Live",
+      badge: "Sentiovex v2.0 • Live",
       title: "The Ultimate AI",
       titleSpan: "Powerhouse.",
       desc: "Access Gemini 1.5, GPT-4o, and Claude 3.5 in one unified workspace. Unlock your creative and academic potential today.",
       ctaPrimary: "Start Creating Free",
     },
     scroller: {
-      title: "Trusted by 10,000+ Engineers & Teams"
+      title: "Trusted by 10 + Engineering & Teams & Students"
     },
     features: {
       title: "Why Settle for Average?",
@@ -62,8 +62,8 @@ const content = {
         placeholder: "Enter your email",
         btn: "Subscribe"
       },
-      copyright: "© 2026 Mirhas Studio. All rights reserved.",
-      security: "256-BIT SSL ENCRYPTED"
+      copyright: "© 2026 Sentiovex. All rights reserved.",
+      security: "SSL ENCRYPTED"
     }
   },
   bn: {
@@ -76,7 +76,7 @@ const content = {
       ctaPrimary: "বিনামূল্যে শুরু করুন",
     },
     scroller: {
-      title: "১০,০০০+ ইঞ্জিনিয়ার এবং টিমের আস্থার প্রতীক"
+      title: "১০+ ইঞ্জিনিয়ার এবং টিমের আস্থার প্রতীক"
     },
     features: {
       title: "কেন সাধারণে সন্তুষ্ট থাকবেন?",
